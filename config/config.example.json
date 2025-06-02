@@ -21,19 +21,40 @@
   "obsidian": {
     "vault_path": "/Users/username/Library/Mobile Documents/iCloud~md~obsidian/Documents/YourVault",
     "daily_notes_folder": "Daily Notes",
-    "knowledge_base_folder": "Knowledge Base"
+    "knowledge_base_folder": "Knowledge Base",
+    "note_files": [
+      {
+        "name": "AI研究笔记",
+        "filename": "AI研究笔记.md",
+        "description": "人工智能相关的论文、技术和理论研究"
+      },
+      {
+        "name": "机器人技术",
+        "filename": "机器人技术.md", 
+        "description": "机器人、具身智能、操作和控制相关内容"
+      },
+      {
+        "name": "产业动态",
+        "filename": "产业动态.md",
+        "description": "AI产业新闻、公司动态、市场分析"
+      }
+    ]
   },
   
   "google_docs": {
-    "document_id": "YOUR_GOOGLE_DOC_ID",
     "credentials_file": "config/google_credentials.json",
-    "categories": {
-      "theory": "理论研究",
-      "application": "应用案例",
-      "technology": "技术进展",
-      "industry": "产业动态",
-      "others": "其他"
-    }
+    "note_documents": [
+      {
+        "name": "AI研究笔记",
+        "document_id": "YOUR_AI_RESEARCH_DOC_ID",
+        "description": "人工智能相关的论文、技术和理论研究"
+      },
+      {
+        "name": "应用案例", 
+        "document_id": "YOUR_APPLICATION_DOC_ID",
+        "description": "AI应用案例、项目实践、工具使用"
+      }
+    ]
   },
   
   "content_extraction": {

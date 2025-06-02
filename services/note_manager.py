@@ -3,6 +3,7 @@
 """
 笔记管理器
 负责管理笔记的读写，支持Obsidian和Google Docs
+支持多文件管理和智能分类
 """
 
 import os
@@ -10,7 +11,7 @@ import re
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 from loguru import logger
 import frontmatter
 import markdown
@@ -31,16 +32,22 @@ class NoteManager:
         """
         self.config = config
         self.note_backend = config.get('note_backend', 'obsidian')  # obsidian 或 google_docs
+        self.llm_service = None  # 将在需要时注入
         
         # 初始化具体的后端
         if self.note_backend == 'obsidian':
             self._init_obsidian(config.get('obsidian', {}))
         elif self.note_backend == 'google_docs':
             self.google_docs_manager = GoogleDocsManager(config.get('google_docs', {}))
+            self.note_files = config.get('google_docs', {}).get('note_documents', [])
         else:
             raise ValueError(f"不支持的笔记后端: {self.note_backend}")
         
         logger.info(f"笔记管理器初始化成功，使用后端: {self.note_backend}")
+    
+    def set_llm_service(self, llm_service):
+        """设置LLM服务（用于智能分类）"""
+        self.llm_service = llm_service
     
     def _init_obsidian(self, obsidian_config: Dict[str, Any]):
         """初始化Obsidian配置"""
@@ -48,15 +55,20 @@ class NoteManager:
         self.daily_notes_folder = self.vault_path / obsidian_config['daily_notes_folder']
         self.kb_folder = self.vault_path / obsidian_config['knowledge_base_folder']
         
-        # 不再从配置读取分类，而是动态解析
-        self._scan_categories()
+        # 笔记文件配置
+        self.note_files = obsidian_config.get('note_files', [])
         
         # 确保目录存在
         self._ensure_directories()
+        
+        # 如果没有配置笔记文件，使用旧的文件夹扫描方式
+        if not self.note_files:
+            logger.warning("未配置note_files，将使用文件夹扫描模式")
+            self._scan_categories()
     
     def _scan_categories(self) -> Dict[str, str]:
         """
-        扫描知识库文件夹，动态获取现有分类
+        扫描知识库文件夹，动态获取现有分类（兼容旧版本）
         
         Returns:
             分类映射字典
@@ -142,11 +154,6 @@ class NoteManager:
         
         # 创建知识库目录
         self.kb_folder.mkdir(parents=True, exist_ok=True)
-        
-        # 为每个分类创建目录
-        for category_name in self.categories.values():
-            category_path = self.kb_folder / category_name
-            category_path.mkdir(exist_ok=True)
     
     def _sanitize_filename(self, filename: str) -> str:
         """
@@ -172,13 +179,79 @@ class NoteManager:
         Args:
             content_data: 内容数据，包含title、url、summary、category等
         """
-        # 每次保存前重新扫描分类，以适应用户的手动修改
-        self._scan_categories()
-        
         if self.note_backend == 'obsidian':
             await self._save_to_obsidian(content_data)
         elif self.note_backend == 'google_docs':
             await self.google_docs_manager.save_content(content_data)
+    
+    async def _select_note_file_and_category(self, content_data: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+        """
+        使用LLM智能选择笔记文件和类别
+        
+        Args:
+            content_data: 内容数据
+            
+        Returns:
+            (选中的笔记文件配置, 类别名称)
+        """
+        if not self.llm_service:
+            # 如果没有LLM服务，使用默认选择
+            if self.note_files:
+                return self.note_files[0], "其他"
+            else:
+                return None, "others"
+        
+        # 构建选择提示
+        title = content_data.get('title', '')
+        summary = content_data.get('summary', '')
+        url = content_data.get('url', '')
+        
+        # 获取可用的笔记文件
+        if self.note_files:
+            files_info = "\n".join([
+                f"{i+1}. {f['name']}: {f['description']}"
+                for i, f in enumerate(self.note_files)
+            ])
+            
+            prompt = f"""请根据以下内容，选择最合适的笔记文件：
+
+内容标题：{title}
+内容摘要：{summary[:300]}
+来源URL：{url}
+
+可选的笔记文件：
+{files_info}
+
+请回答：
+1. 选择的文件编号（如：1）
+2. 在该文件中应该归类到哪个章节或标题下（如果是新类别，请给出建议的标题）
+
+格式：
+文件：[编号]
+类别：[类别名称]"""
+            
+            try:
+                response = await self.llm_service.chat(prompt)
+                
+                # 解析响应
+                file_match = re.search(r'文件[：:]\s*(\d+)', response)
+                category_match = re.search(r'类别[：:]\s*(.+)', response)
+                
+                if file_match and category_match:
+                    file_idx = int(file_match.group(1)) - 1
+                    category = category_match.group(1).strip()
+                    
+                    if 0 <= file_idx < len(self.note_files):
+                        return self.note_files[file_idx], category
+                
+            except Exception as e:
+                logger.error(f"LLM选择文件失败: {e}")
+        
+        # 默认选择
+        if self.note_files:
+            return self.note_files[0], "其他"
+        else:
+            return None, "others"
     
     async def _save_to_obsidian(self, content_data: Dict[str, Any]):
         """保存到Obsidian"""
@@ -186,7 +259,6 @@ class NoteManager:
             title = content_data.get('title', '未命名内容')
             url = content_data.get('url', '')
             summary = content_data.get('summary', '')
-            category = content_data.get('category', 'others')
             context = content_data.get('context', '')
             extracted_at = content_data.get('extracted_at', datetime.now())
             raw_content = content_data.get('raw_content', '')
@@ -201,40 +273,187 @@ class NoteManager:
                 logger.info(f"跳过重复内容: {title}")
                 return
             
-            # 构建笔记内容（使用新格式）
-            note_content = self._build_formatted_note_content(
-                title=title,
-                url=url,
-                summary=summary,
-                context=context,
-                extracted_at=extracted_at,
-                article_title=article_title,
-                content_type=content_type,
-                source_user=source_user,
-                group_name=group_name,
-                is_history=is_history
-            )
+            # 智能选择笔记文件和类别
+            selected_file, category = await self._select_note_file_and_category(content_data)
             
-            # 保存到知识库
-            kb_path = self._get_kb_note_path(title, category)
-            await self._save_note(kb_path, note_content, content_data)
+            # 如果有配置笔记文件，使用新的保存方式
+            if selected_file:
+                await self._save_to_note_file(
+                    selected_file, category, content_data,
+                    title, url, summary, context, extracted_at,
+                    article_title, content_type, source_user, 
+                    group_name, is_history
+                )
+            else:
+                # 使用旧的文件夹方式
+                # 构建笔记内容
+                note_content = self._build_formatted_note_content(
+                    title=title,
+                    url=url,
+                    summary=summary,
+                    context=context,
+                    extracted_at=extracted_at,
+                    article_title=article_title,
+                    content_type=content_type,
+                    source_user=source_user,
+                    group_name=group_name,
+                    is_history=is_history
+                )
+                
+                # 保存到知识库
+                kb_path = self._get_kb_note_path(title, category)
+                await self._save_note(kb_path, note_content, content_data)
             
             # 在日记中添加引用（仅对非历史消息）
             if not is_history:
-                await self._add_to_daily_note(title, kb_path, extracted_at, group_name)
+                await self._add_to_daily_note(title, None, extracted_at, group_name)
             
-            logger.info(f"内容已保存到Obsidian笔记: {kb_path}")
+            logger.info(f"内容已保存到Obsidian笔记")
             
         except Exception as e:
             logger.error(f"保存内容到Obsidian时出错: {e}", exc_info=True)
             raise
+    
+    async def _save_to_note_file(self, note_file: Dict[str, Any], category: str, 
+                                content_data: Dict[str, Any], title: str, url: str, 
+                                summary: str, context: str, extracted_at: datetime,
+                                article_title: str, content_type: str, source_user: str,
+                                group_name: str, is_history: bool):
+        """保存到指定的笔记文件"""
+        # 构建笔记文件路径
+        note_path = self.kb_folder / note_file['filename']
+        
+        # 读取现有内容
+        existing_content = ""
+        existing_categories = {}
+        
+        if note_path.exists():
+            existing_content = note_path.read_text(encoding='utf-8')
+            # 解析现有的类别结构
+            existing_categories = self._parse_note_categories(existing_content)
+        else:
+            # 创建新文件，添加标题
+            existing_content = f"# {note_file['name']}\n\n"
+        
+        # 构建新条目
+        new_entry = self._build_note_entry(
+            title=title,
+            url=url,
+            summary=summary,
+            article_title=article_title,
+            content_type=content_type,
+            extracted_at=extracted_at
+        )
+        
+        # 将新条目插入到合适的位置
+        updated_content = self._insert_entry_to_category(
+            existing_content, 
+            category, 
+            new_entry,
+            existing_categories
+        )
+        
+        # 保存更新后的内容
+        with open(note_path, 'w', encoding='utf-8') as f:
+            f.write(updated_content)
+        
+        logger.info(f"内容已添加到 {note_file['name']} 的 {category} 类别下")
+    
+    def _parse_note_categories(self, content: str) -> Dict[str, int]:
+        """
+        解析笔记中的类别结构
+        
+        Returns:
+            类别名称到行号的映射
+        """
+        categories = {}
+        lines = content.split('\n')
+        
+        for i, line in enumerate(lines):
+            # 查找二级标题作为类别
+            if line.startswith('## '):
+                category_name = line[3:].strip()
+                categories[category_name] = i
+        
+        return categories
+    
+    def _build_note_entry(self, title: str, url: str, summary: str,
+                         article_title: str, content_type: str, 
+                         extracted_at: datetime) -> str:
+        """构建笔记条目"""
+        # 提取日期（精确到月份）
+        if 'arxiv' in content_type or 'arxiv' in url.lower():
+            # 尝试从URL或标题提取arxiv日期
+            date_match = re.search(r'(\d{2})(\d{2})\.(\d{4,5})', url + ' ' + title)
+            if date_match:
+                year = f"20{date_match.group(1)}"  # 假设是20xx年
+                month = date_match.group(2)
+                date_str = f"{year}-{month}"
+            else:
+                date_str = extracted_at.strftime('%Y-%m')
+        else:
+            date_str = extracted_at.strftime('%Y-%m-%d')
+        
+        # 构建链接行
+        if article_title and article_title != title:
+            link_line = f"[{article_title}]({url})"
+        else:
+            source = self._extract_source_from_url(url)
+            link_line = f"[{source}]({url})"
+        
+        # 构建条目
+        entry = f"""
+**{date_str} {title}**  
+{link_line}  
+{summary}
+"""
+        
+        return entry.strip()
+    
+    def _insert_entry_to_category(self, content: str, category: str, 
+                                 new_entry: str, existing_categories: Dict[str, int]) -> str:
+        """将新条目插入到指定类别"""
+        lines = content.split('\n')
+        
+        if category in existing_categories:
+            # 找到类别的位置
+            category_line = existing_categories[category]
+            
+            # 找到下一个类别的位置或文件结尾
+            next_category_line = len(lines)
+            for cat, line_num in existing_categories.items():
+                if line_num > category_line:
+                    next_category_line = min(next_category_line, line_num)
+            
+            # 在类别后插入新条目
+            # 查找类别下的第一个非空行
+            insert_position = category_line + 1
+            while insert_position < next_category_line and insert_position < len(lines):
+                if lines[insert_position].strip():
+                    break
+                insert_position += 1
+            
+            # 插入新条目
+            lines.insert(insert_position, '\n' + new_entry + '\n')
+        else:
+            # 创建新类别
+            # 在文件末尾添加新类别
+            if lines and lines[-1].strip():  # 如果最后一行不是空行
+                lines.append('')
+            
+            lines.append(f'## {category}')
+            lines.append('')
+            lines.append(new_entry)
+            lines.append('')
+        
+        return '\n'.join(lines)
     
     def _build_formatted_note_content(self, title: str, url: str, summary: str,
                                     context: str, extracted_at: datetime, 
                                     article_title: str = '', content_type: str = 'web_link',
                                     source_user: str = '', group_name: str = '', 
                                     is_history: bool = False) -> str:
-        """构建格式化的笔记内容"""
+        """构建格式化的笔记内容（用于旧的文件夹方式）"""
         # 提取日期（精确到月份）
         if 'arxiv' in content_type or 'arxiv' in url.lower():
             # 尝试从URL或标题提取arxiv日期
@@ -411,7 +630,7 @@ class NoteManager:
     
     def _get_kb_note_path(self, title: str, category: str) -> Path:
         """
-        获取知识库笔记路径
+        获取知识库笔记路径（用于旧的文件夹方式）
         
         Args:
             title: 笔记标题
@@ -459,7 +678,7 @@ class NoteManager:
     
     async def _save_note(self, path: Path, content: str, metadata: Dict[str, Any]):
         """
-        保存笔记文件
+        保存笔记文件（用于旧的文件夹方式）
         
         Args:
             path: 文件路径
@@ -496,24 +715,30 @@ class NoteManager:
         with open(path, 'w', encoding='utf-8') as f:
             f.write(frontmatter.dumps(post))
     
-    async def _add_to_daily_note(self, title: str, kb_path: Path, date: datetime, group_name: str = ''):
+    async def _add_to_daily_note(self, title: str, kb_path: Optional[Path], 
+                               date: datetime, group_name: str = ''):
         """
         在日记中添加引用
         
         Args:
             title: 内容标题
-            kb_path: 知识库笔记路径
+            kb_path: 知识库笔记路径（如果有）
             date: 日期
             group_name: 群组名称
         """
         daily_path = self._get_daily_note_path(date)
         
-        # 计算相对路径
-        try:
-            relative_path = os.path.relpath(kb_path, self.vault_path)
-            # 转换为Obsidian链接格式
-            link = f"[[{relative_path.replace('.md', '')}|{title}]]"
-        except:
+        # 构建链接
+        if kb_path:
+            # 计算相对路径
+            try:
+                relative_path = os.path.relpath(kb_path, self.vault_path)
+                # 转换为Obsidian链接格式
+                link = f"[[{relative_path.replace('.md', '')}|{title}]]"
+            except:
+                link = f"[[{title}]]"
+        else:
+            # 如果没有路径，只用标题
             link = f"[[{title}]]"
         
         # 构建条目

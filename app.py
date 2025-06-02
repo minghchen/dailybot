@@ -72,6 +72,8 @@ class DailyBot:
             
             # 初始化笔记管理器
             self.note_manager = NoteManager(self.config)
+            # 注入LLM服务到笔记管理器（用于智能分类）
+            self.note_manager.set_llm_service(self.llm_service)
             logger.info("笔记管理器初始化成功")
             
             # 初始化RAG服务（根据笔记后端决定是否启用）
