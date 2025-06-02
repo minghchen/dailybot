@@ -4,7 +4,7 @@
     "single_chat_reply_prefix": "[Bot] ",
     "group_chat_prefix": ["@bot"],
     "group_chat_reply_prefix": "",
-    "group_name_white_list": ["ALL_GROUP"],
+    "group_name_white_list": [],
     "nick_name_black_list": []
   },
   
@@ -16,15 +16,23 @@
     "proxy": ""
   },
   
+  "note_backend": "obsidian",
+  
   "obsidian": {
     "vault_path": "/Users/username/Library/Mobile Documents/iCloud~md~obsidian/Documents/YourVault",
     "daily_notes_folder": "Daily Notes",
-    "knowledge_base_folder": "Knowledge Base",
+    "knowledge_base_folder": "Knowledge Base"
+  },
+  
+  "google_docs": {
+    "document_id": "YOUR_GOOGLE_DOC_ID",
+    "credentials_file": "config/google_credentials.json",
     "categories": {
-      "papers": "学术论文",
-      "articles": "文章资料", 
-      "videos": "视频笔记",
-      "others": "其他资料"
+      "theory": "理论研究",
+      "application": "应用案例",
+      "technology": "技术进展",
+      "industry": "产业动态",
+      "others": "其他"
     }
   },
   
@@ -32,7 +40,8 @@
     "context_time_window": 60,
     "auto_extract_enabled": true,
     "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
-    "silent_mode": true
+    "silent_mode": true,
+    "max_summary_length": 500
   },
   
   "rag": {
@@ -55,6 +64,11 @@
     "auto_save_interval": 300,
     "timezone": "Asia/Shanghai",
     "admin_list": [],
-    "whitelist_file": "config/group_whitelist.json"
+    "whitelist_file": "config/group_whitelist.json",
+    "history_batch_size": 50,
+    "history_process_delay": 0.5,
+    "max_history_days": 30,
+    "message_db_path": "data/messages.db",
+    "message_retention_days": 30
   }
 } 

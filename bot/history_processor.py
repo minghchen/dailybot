@@ -255,28 +255,23 @@ class HistoryProcessor:
         
         for msg in messages:
             try:
-                # 检查是否包含链接
-                if self.message_handler.contains_link(msg.get('Text', '')):
-                    # 获取上下文消息
-                    context_messages = self._get_context_from_batch(messages, msg)
+                # 添加群组信息到消息
+                msg['User'] = msg.get('User', {})
+                msg['User']['NickName'] = msg['User'].get('NickName', group_name)
+                
+                # 使用消息处理器的统一方法处理历史消息
+                extracted_content = await self.message_handler.process_message_for_history(msg, is_group=True)
+                
+                if extracted_content:
+                    # 保存到笔记
+                    await self.message_handler.note_manager.save_content(extracted_content)
                     
-                    # 提取内容
-                    extracted_content = await self.content_extractor.extract(msg, context_messages)
+                    # 更新RAG
+                    if self.message_handler.rag_service:
+                        await self.message_handler.rag_service.add_document(extracted_content)
                     
-                    if extracted_content:
-                        # 添加群组信息
-                        extracted_content['group_name'] = group_name
-                        extracted_content['is_history'] = True
-                        
-                        # 保存到笔记
-                        await self.message_handler.note_manager.save_content(extracted_content)
-                        
-                        # 更新RAG
-                        if self.message_handler.rag_service:
-                            await self.message_handler.rag_service.add_document(extracted_content)
-                            
-                        processed_count += 1
-                        
+                    processed_count += 1
+                    
             except Exception as e:
                 logger.error(f"处理历史消息时出错: {e}", exc_info=True)
                 continue

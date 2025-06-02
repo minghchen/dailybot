@@ -220,6 +220,9 @@ class WeChatBot:
             # 判断是否是群聊
             is_group = msg['FromUserName'].startswith('@@')
             
+            # 保存所有消息到存储（无论是否触发机器人）
+            self.message_handler.save_message(msg)
+            
             # 检查是否是管理命令
             if self._handle_admin_command(msg, is_group):
                 return
@@ -338,6 +341,9 @@ class WeChatBot:
         try:
             # 判断是否是群聊
             is_group = msg['FromUserName'].startswith('@@')
+            
+            # 保存所有消息到存储
+            self.message_handler.save_message(msg)
             
             # 检查白名单
             if not self._check_white_list(msg, is_group):

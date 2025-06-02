@@ -78,32 +78,57 @@ class ContentExtractor:
             
             # 提取内容
             if link_type in self.extractors:
-                content = await self.extractors[link_type](url)
+                content_info = await self.extractors[link_type](url)
             else:
-                content = await self._extract_web_content(url)
+                content_info = await self._extract_web_content(url)
             
-            if not content:
+            if not content_info:
                 return None
             
             # 构建上下文
             context = self._build_context(msg, context_messages)
             
-            # 使用LLM总结内容
-            summary = await self.llm_service.summarize(content)
+            # 使用LLM总结内容，但要求精炼（1-5句话）
+            summary_prompt = f"""请用1-5句话总结以下内容的核心要点，要求：
+1. 提取最重要的观点或发现
+2. 保持客观准确
+3. 语言精炼，每句话都有信息量
+4. 如果是技术内容，突出技术创新点
+
+内容：
+{content_info['content'][:3000]}"""
             
-            # 使用LLM分类
-            categories = list(self.config['obsidian']['categories'].keys())
-            category = await self.llm_service.classify(summary, categories)
+            summary = await self.llm_service.chat(summary_prompt)
+            
+            # 使用LLM进行智能分类
+            categories = ['theory', 'application', 'technology', 'industry', 'others']
+            category_prompt = f"""请对以下内容进行分类，选择最合适的一个类别：
+- theory: 理论研究、学术论文、基础研究
+- application: 应用案例、实践经验、项目实施
+- technology: 技术进展、工具框架、技术实现
+- industry: 产业动态、市场分析、行业趋势
+- others: 其他难以归类的内容
+
+内容标题：{content_info.get('title', '')}
+内容摘要：{summary[:500]}
+
+请直接返回类别名称（如：theory），不要有其他内容。"""
+            
+            category = await self.llm_service.chat(category_prompt)
+            category = category.strip().lower()
+            if category not in categories:
+                category = 'others'
             
             # 构建返回数据
             result = {
-                'title': link_info.get('title', '未知标题'),
+                'title': content_info.get('title', link_info.get('title', '未知标题')),
+                'article_title': content_info.get('article_title', ''),  # 公众号文章标题
                 'url': url,
                 'type': link_type,
                 'summary': summary,
                 'category': category,
                 'context': context,
-                'raw_content': content,
+                'raw_content': content_info['content'],
                 'extracted_at': datetime.now(),
                 'source_user': msg['User']['NickName']
             }
@@ -136,7 +161,7 @@ class ContentExtractor:
         
         return "\n".join(context_parts)
     
-    async def _extract_wechat_article(self, url: str) -> Optional[str]:
+    async def _extract_wechat_article(self, url: str) -> Optional[Dict[str, Any]]:
         """提取微信公众号文章内容"""
         try:
             async with aiohttp.ClientSession() as session:
@@ -145,16 +170,24 @@ class ContentExtractor:
             
             soup = BeautifulSoup(html, 'html.parser')
             
-            # 提取标题
-            title = soup.find('h1', class_='rich_media_title')
-            title_text = title.text.strip() if title else ''
+            # 提取文章标题（这是公众号文章的标题）
+            article_title = ''
+            title_elem = soup.find('h1', class_='rich_media_title')
+            if title_elem:
+                article_title = title_elem.text.strip()
+            
+            # 提取内容标题（尝试从文章中提取论文或主题标题）
+            content_title = article_title  # 默认使用文章标题
             
             # 提取作者
-            author = soup.find('span', class_='rich_media_meta_text')
-            author_text = author.text.strip() if author else ''
+            author = ''
+            author_elem = soup.find('span', class_='rich_media_meta_text')
+            if author_elem:
+                author = author_elem.text.strip()
             
             # 提取正文
             content_div = soup.find('div', id='js_content')
+            content = ''
             if content_div:
                 # 移除脚本和样式
                 for script in content_div(['script', 'style']):
@@ -162,19 +195,41 @@ class ContentExtractor:
                 
                 # 获取文本内容
                 content = content_div.get_text(separator='\n', strip=True)
-            else:
-                content = ''
+                
+                # 尝试从正文中提取论文标题
+                # 查找常见的论文标题模式
+                paper_patterns = [
+                    r'《([^》]+)》',  # 中文书名号
+                    r'"([^"]+)"',     # 英文引号
+                    r'「([^」]+)」',  # 日文引号
+                    r'Title:\s*(.+)', # Title: 格式
+                    r'论文.*?[：:]\s*(.+)', # 论文：格式
+                ]
+                
+                for pattern in paper_patterns:
+                    match = re.search(pattern, content[:1000])  # 只在前1000字符中查找
+                    if match:
+                        potential_title = match.group(1).strip()
+                        # 验证是否像是论文标题（长度合适，包含关键词等）
+                        if 10 < len(potential_title) < 200:
+                            content_title = potential_title
+                            break
             
             # 组合内容
-            full_content = f"标题: {title_text}\n作者: {author_text}\n\n{content}"
+            full_content = f"作者: {author}\n\n{content}" if author else content
             
-            return full_content
+            return {
+                'title': content_title,  # 内容的主标题（论文名等）
+                'article_title': article_title,  # 公众号文章标题
+                'content': full_content,
+                'author': author
+            }
             
         except Exception as e:
             logger.error(f"提取微信公众号文章失败: {e}")
             return None
     
-    async def _extract_bilibili_video(self, url: str) -> Optional[str]:
+    async def _extract_bilibili_video(self, url: str) -> Optional[Dict[str, Any]]:
         """提取B站视频内容"""
         try:
             # 使用B站视频总结工具
@@ -184,8 +239,7 @@ class ContentExtractor:
                 return None
             
             # 构建内容
-            content = f"""标题: {video_info.get('title', '')}
-UP主: {video_info.get('author', '')}
+            content = f"""UP主: {video_info.get('author', '')}
 时长: {video_info.get('duration', '')}
 播放量: {video_info.get('views', '')}
 
@@ -196,13 +250,17 @@ UP主: {video_info.get('author', '')}
 {video_info.get('transcript', '(暂无字幕信息)')}
 """
             
-            return content
+            return {
+                'title': video_info.get('title', ''),
+                'article_title': '',  # 视频没有额外的文章标题
+                'content': content
+            }
             
         except Exception as e:
             logger.error(f"提取B站视频内容失败: {e}")
             return None
     
-    async def _extract_arxiv_paper(self, url: str) -> Optional[str]:
+    async def _extract_arxiv_paper(self, url: str) -> Optional[Dict[str, Any]]:
         """提取arXiv论文内容"""
         try:
             # 从URL提取论文ID
@@ -233,22 +291,24 @@ UP主: {video_info.get('author', '')}
             published = entry.find('published').text[:10]  # 只取日期部分
             
             # 构建内容
-            content = f"""标题: {title}
-作者: {', '.join(authors)}
+            content = f"""作者: {', '.join(authors)}
 发布日期: {published}
-链接: {url}
 
 摘要:
 {summary}
 """
             
-            return content
+            return {
+                'title': title,  # 论文标题
+                'article_title': '',  # arXiv没有额外的文章标题
+                'content': content
+            }
             
         except Exception as e:
             logger.error(f"提取arXiv论文失败: {e}")
             return None
     
-    async def _extract_web_content(self, url: str) -> Optional[str]:
+    async def _extract_web_content(self, url: str) -> Optional[Dict[str, Any]]:
         """提取通用网页内容"""
         try:
             async with aiohttp.ClientSession() as session:
@@ -262,8 +322,10 @@ UP主: {video_info.get('author', '')}
                 script.decompose()
             
             # 尝试提取标题
-            title = soup.find('title')
-            title_text = title.text.strip() if title else ''
+            title = ''
+            title_elem = soup.find('title')
+            if title_elem:
+                title = title_elem.text.strip()
             
             # 尝试提取主要内容
             # 优先查找article标签
@@ -284,10 +346,11 @@ UP主: {video_info.get('author', '')}
             if len(content) > 5000:
                 content = content[:5000] + '\n...(内容过长，已截断)'
             
-            # 组合内容
-            full_content = f"标题: {title_text}\n链接: {url}\n\n{content}"
-            
-            return full_content
+            return {
+                'title': title,
+                'article_title': '',
+                'content': content
+            }
             
         except Exception as e:
             logger.error(f"提取网页内容失败: {e}")

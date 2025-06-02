@@ -14,6 +14,7 @@ from loguru import logger
 import itchat
 
 from services.content_extractor import ContentExtractor
+from utils.message_storage import MessageStorage
 
 
 class MessageHandler:
@@ -45,9 +46,10 @@ class MessageHandler:
             llm_service=llm_service
         )
         
-        # 消息历史缓存（用于获取上下文）
-        self.message_history = []
-        self.max_history_size = 1000
+        # 消息存储
+        self.message_storage = MessageStorage(
+            db_path=config.get('system', {}).get('message_db_path', 'data/messages.db')
+        )
         
         # 运行状态
         self.running = False
@@ -73,41 +75,37 @@ class MessageHandler:
                    re.search(mp_pattern, text) or
                    re.search(bilibili_pattern, text))
     
-    def _add_to_history(self, msg: Dict[str, Any]):
-        """添加消息到历史记录"""
-        self.message_history.append({
-            'msg': msg,
-            'timestamp': msg.get('CreateTime', int(time.time()))
-        })
+    def save_message(self, msg: Dict[str, Any]):
+        """
+        保存消息到存储
         
-        # 限制历史记录大小
-        if len(self.message_history) > self.max_history_size:
-            self.message_history = self.message_history[-self.max_history_size:]
+        Args:
+            msg: 微信消息对象
+        """
+        try:
+            self.message_storage.save_message(msg)
+        except Exception as e:
+            logger.error(f"保存消息失败: {e}")
     
-    def _get_context_messages(self, target_time: int, window_seconds: int = 60) -> List[Dict[str, Any]]:
+    def _get_context_messages(self, target_time: int, window_seconds: int = 60,
+                            group_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         获取指定时间窗口内的上下文消息
         
         Args:
             target_time: 目标时间戳
             window_seconds: 时间窗口（秒）
+            group_name: 群组名称
             
         Returns:
             上下文消息列表
         """
-        context_messages = []
-        
-        for history_item in self.message_history:
-            msg_time = history_item['timestamp']
-            time_diff = abs(msg_time - target_time)
-            
-            if time_diff <= window_seconds:
-                context_messages.append(history_item['msg'])
-        
-        # 按时间排序
-        context_messages.sort(key=lambda x: x.get('CreateTime', 0))
-        
-        return context_messages
+        # 从存储中获取消息
+        return self.message_storage.get_messages_in_time_window(
+            target_time=target_time,
+            window_seconds=window_seconds,
+            group_name=group_name
+        )
     
     def _remove_prefix(self, text: str, prefixes: List[str]) -> str:
         """移除触发前缀"""
@@ -126,14 +124,20 @@ class MessageHandler:
         msg = message_data['msg']
         
         try:
-            # 添加到历史记录
-            self._add_to_history(msg)
+            # 保存消息到存储
+            self.save_message(msg)
             
-            # 获取上下文消息
+            # 获取群组名称（如果是群消息）
+            group_name = None
+            if message_data.get('is_group'):
+                group_name = msg.get('User', {}).get('NickName', '')
+            
+            # 获取上下文消息（从持久化存储）
             context_window = self.extraction_config['context_time_window']
             context_messages = self._get_context_messages(
                 msg['CreateTime'],
-                context_window
+                context_window,
+                group_name=group_name
             )
             
             # 提取内容
@@ -143,6 +147,9 @@ class MessageHandler:
             )
             
             if extracted_content:
+                # 添加群组信息
+                extracted_content['group_name'] = group_name or ''
+                
                 # 保存到笔记
                 await self.note_manager.save_content(extracted_content)
                 logger.info(f"内容已提取并保存: {extracted_content['title']}")
@@ -165,6 +172,9 @@ class MessageHandler:
         is_group = message_data['is_group']
         
         try:
+            # 保存消息到存储
+            self.save_message(msg)
+            
             # 获取消息文本并移除前缀
             text = msg['Text']
             if is_group:
@@ -220,10 +230,63 @@ class MessageHandler:
             logger.error(f"生成回复时出错: {e}", exc_info=True)
             return None
     
+    async def process_message_for_history(self, msg: Dict[str, Any], 
+                                        is_group: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        处理历史消息（供历史处理器使用）
+        
+        Args:
+            msg: 消息对象
+            is_group: 是否是群消息
+            
+        Returns:
+            提取的内容（如果有）
+        """
+        try:
+            # 保存消息到存储
+            self.save_message(msg)
+            
+            # 检查是否包含链接
+            if not self.contains_link(msg.get('Text', '')):
+                return None
+            
+            # 获取群组名称
+            group_name = None
+            if is_group:
+                group_name = msg.get('User', {}).get('NickName', '')
+            
+            # 获取上下文消息
+            context_window = self.extraction_config['context_time_window']
+            context_messages = self._get_context_messages(
+                msg['CreateTime'],
+                context_window,
+                group_name=group_name
+            )
+            
+            # 提取内容
+            extracted_content = await self.content_extractor.extract(
+                msg,
+                context_messages
+            )
+            
+            if extracted_content:
+                extracted_content['group_name'] = group_name or ''
+                extracted_content['is_history'] = True
+                return extracted_content
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"处理历史消息时出错: {e}", exc_info=True)
+            return None
+    
     async def start(self):
         """启动消息处理循环"""
         self.running = True
         logger.info("消息处理器已启动")
+        
+        # 启动定期清理任务
+        asyncio.create_task(self._periodic_cleanup())
         
         while self.running:
             try:
@@ -248,6 +311,20 @@ class MessageHandler:
                 await asyncio.sleep(1)
         
         logger.info("消息处理器已停止")
+    
+    async def _periodic_cleanup(self):
+        """定期清理旧消息"""
+        while self.running:
+            try:
+                # 每天清理一次
+                await asyncio.sleep(24 * 3600)
+                
+                # 清理超过配置天数的消息
+                retention_days = self.config.get('system', {}).get('message_retention_days', 30)
+                self.message_storage.cleanup_old_messages(retention_days)
+                
+            except Exception as e:
+                logger.error(f"定期清理任务出错: {e}")
     
     def stop(self):
         """停止消息处理器"""

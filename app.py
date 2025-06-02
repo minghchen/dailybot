@@ -46,6 +46,19 @@ class DailyBot:
         try:
             self.config = ConfigLoader.load(config_path)
             logger.info("配置文件加载成功")
+            
+            # 验证笔记后端配置
+            note_backend = self.config.get('note_backend', 'obsidian')
+            if note_backend == 'google_docs':
+                # 检查Google Docs配置
+                google_config = self.config.get('google_docs', {})
+                if not google_config.get('document_id') or google_config.get('document_id') == 'YOUR_GOOGLE_DOC_ID':
+                    logger.error("请在配置文件中设置有效的 Google Docs document_id")
+                    sys.exit(1)
+                if not google_config.get('credentials_file') or not os.path.exists(google_config.get('credentials_file', '')):
+                    logger.error("请配置有效的 Google 服务账号凭证文件")
+                    sys.exit(1)
+            
         except Exception as e:
             logger.error(f"配置文件加载失败: {e}")
             sys.exit(1)
@@ -58,17 +71,22 @@ class DailyBot:
             logger.info("LLM服务初始化成功")
             
             # 初始化笔记管理器
-            self.note_manager = NoteManager(self.config['obsidian'])
+            self.note_manager = NoteManager(self.config)
             logger.info("笔记管理器初始化成功")
             
-            # 初始化RAG服务
+            # 初始化RAG服务（根据笔记后端决定是否启用）
             if self.config['rag']['enabled']:
-                self.rag_service = RAGService(
-                    self.config['rag'],
-                    self.llm_service,
-                    self.note_manager
-                )
-                logger.info("RAG服务初始化成功")
+                # Google Docs暂不支持RAG
+                if self.config.get('note_backend') == 'google_docs':
+                    logger.warning("Google Docs后端暂不支持RAG功能")
+                    self.rag_service = None
+                else:
+                    self.rag_service = RAGService(
+                        self.config['rag'],
+                        self.llm_service,
+                        self.note_manager
+                    )
+                    logger.info("RAG服务初始化成功")
             
             # 初始化微信机器人
             self.wechat_bot = WeChatBot(
@@ -120,6 +138,7 @@ class DailyBot:
         
         logger.info("="*50)
         logger.info("DailyBot - 微信信息整理AI助手")
+        logger.info(f"笔记后端: {self.config.get('note_backend', 'obsidian')}")
         logger.info("="*50)
         
         # 初始化服务
