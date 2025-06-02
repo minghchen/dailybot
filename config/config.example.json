@@ -1,0 +1,60 @@
+{
+  "wechat": {
+    "single_chat_prefix": ["bot", "@bot"],
+    "single_chat_reply_prefix": "[Bot] ",
+    "group_chat_prefix": ["@bot"],
+    "group_chat_reply_prefix": "",
+    "group_name_white_list": ["ALL_GROUP"],
+    "nick_name_black_list": []
+  },
+  
+  "openai": {
+    "api_key": "YOUR_OPENAI_API_KEY",
+    "model": "gpt-4o-mini",
+    "temperature": 0.7,
+    "max_tokens": 2000,
+    "proxy": ""
+  },
+  
+  "obsidian": {
+    "vault_path": "/Users/username/Library/Mobile Documents/iCloud~md~obsidian/Documents/YourVault",
+    "daily_notes_folder": "Daily Notes",
+    "knowledge_base_folder": "Knowledge Base",
+    "categories": {
+      "papers": "学术论文",
+      "articles": "文章资料", 
+      "videos": "视频笔记",
+      "others": "其他资料"
+    }
+  },
+  
+  "content_extraction": {
+    "context_time_window": 60,
+    "auto_extract_enabled": true,
+    "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
+    "silent_mode": true
+  },
+  
+  "rag": {
+    "enabled": true,
+    "embedding_model": "text-embedding-ada-002",
+    "chunk_size": 1000,
+    "chunk_overlap": 200,
+    "top_k": 5,
+    "similarity_threshold": 0.7
+  },
+  
+  "bilibili": {
+    "summarizer_api": "",
+    "cookies": ""
+  },
+  
+  "system": {
+    "log_level": "INFO",
+    "message_queue_size": 100,
+    "auto_save_interval": 300,
+    "timezone": "Asia/Shanghai",
+    "admin_list": [],
+    "whitelist_file": "config/group_whitelist.json"
+  }
+} 

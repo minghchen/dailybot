@@ -1,0 +1,45 @@
+# 微信机器人框架
+itchat-uos==1.5.0.dev0
+wechaty>=0.10.7
+
+# OpenAI相关
+openai>=1.0.0
+tiktoken>=0.5.1
+
+# 文档处理
+pypdf>=3.17.0
+beautifulsoup4>=4.12.2
+requests>=2.31.0
+lxml>=4.9.3
+
+# RAG相关
+langchain>=0.1.0
+chromadb>=0.4.18
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+
+# 笔记管理
+python-frontmatter>=1.0.0
+markdown>=3.5.1
+
+# 工具类
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pytz>=2023.3
+aiohttp>=3.9.1
+asyncio>=3.4.3
+
+# 日志和监控
+loguru>=0.7.2
+colorlog>=6.8.0
+
+# 数据处理
+pandas>=2.1.4
+numpy>=1.26.2
+
+# B站相关
+bilibili-api-python>=16.1.0
+
+# 调试工具
+ipython>=8.18.1
+rich>=13.7.0 
