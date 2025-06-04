@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  dailybot:
+    build: .
+    image: dailybot:latest
+    container_name: dailybot
+    volumes:
+      # 配置文件
+      - ./config:/app/config
+      # 数据持久化
+      - ./data:/app/data
+      # 日志文件
+      - ./logs:/app/logs
+      # Obsidian 笔记路径（根据实际情况修改）
+      # - /path/to/your/obsidian/vault:/obsidian
+    environment:
+      # OpenAI 配置
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      
+      # Wechaty Puppet Service 配置
+      - WECHATY_PUPPET_SERVICE_TOKEN=${WECHATY_PUPPET_SERVICE_TOKEN}
+      - WECHATY_PUPPET_SERVICE_ENDPOINT=${WECHATY_PUPPET_SERVICE_ENDPOINT}
+      
+      # 系统配置
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      
+      # 代理配置（可选）
+      - HTTP_PROXY=${HTTP_PROXY}
+      - HTTPS_PROXY=${HTTPS_PROXY}
+      - NO_PROXY=localhost,127.0.0.1
+    restart: unless-stopped
+    networks:
+      - dailybot-network
+
+networks:
+  dailybot-network:
+    driver: bridge 

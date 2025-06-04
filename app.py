@@ -16,7 +16,9 @@ from pathlib import Path
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bot.wechat_bot import WeChatBot
+from channel.channel_factory import ChannelFactory
+from channel.channel import ReplyType, Context, Reply
+from bot.message_handler import MessageHandler
 from services.llm_service import LLMService
 from services.note_manager import NoteManager
 from services.rag_service import RAGService
@@ -29,7 +31,8 @@ class DailyBot:
     def __init__(self):
         """初始化应用"""
         self.config = None
-        self.wechat_bot = None
+        self.channel = None
+        self.message_handler = None
         self.llm_service = None
         self.note_manager = None
         self.rag_service = None
@@ -90,25 +93,50 @@ class DailyBot:
                     )
                     logger.info("RAG服务初始化成功")
             
-            # 初始化微信机器人
-            self.wechat_bot = WeChatBot(
+            # 初始化消息处理器
+            self.message_handler = MessageHandler(
                 config=self.config,
                 llm_service=self.llm_service,
                 note_manager=self.note_manager,
                 rag_service=self.rag_service
             )
-            logger.info("微信机器人初始化成功")
+            logger.info("消息处理器初始化成功")
+            
+            # 初始化Channel
+            channel_type = self.config.get('channel_type', 'wechat')
+            self.channel = ChannelFactory.create_channel(channel_type, self.config)
+            if not self.channel:
+                logger.error(f"创建通道失败: {channel_type}")
+                sys.exit(1)
+            
+            # 注册消息处理器
+            self._register_handlers()
+            logger.info("消息通道初始化成功")
             
         except Exception as e:
             logger.error(f"服务初始化失败: {e}")
             sys.exit(1)
     
+    def _register_handlers(self):
+        """注册消息处理器到Channel"""
+        # 处理文本消息
+        async def handle_text(context: Context) -> Reply:
+            return await self.message_handler.handle_text_message(context)
+        
+        # 处理分享消息
+        async def handle_sharing(context: Context) -> Reply:
+            return await self.message_handler.handle_sharing_message(context)
+        
+        # 注册处理器
+        self.channel.register_handler("TEXT", handle_text)
+        self.channel.register_handler("SHARING", handle_sharing)
+    
     def signal_handler(self, sig, frame):
         """处理退出信号"""
         logger.info("收到退出信号，正在关闭...")
         self.running = False
-        if self.wechat_bot:
-            self.wechat_bot.stop()
+        if self.channel:
+            self.channel.shutdown()
         sys.exit(0)
     
     async def run(self):
@@ -141,23 +169,31 @@ class DailyBot:
         logger.info("="*50)
         logger.info("DailyBot - 微信信息整理AI助手")
         logger.info(f"笔记后端: {self.config.get('note_backend', 'obsidian')}")
+        logger.info(f"消息通道: {self.config.get('channel_type', 'wechat')}")
         logger.info("="*50)
         
         # 初始化服务
         self.init_services()
         
-        # 启动机器人
-        logger.info("正在启动微信机器人...")
+        # 启动通道
+        logger.info("正在启动消息通道...")
         self.running = True
         
         try:
-            # 启动微信机器人（阻塞运行）
-            await self.wechat_bot.start()
+            # 启动channel
+            self.channel.startup()
+            
+            # 保持运行
+            while self.running:
+                await asyncio.sleep(1)
+                
         except KeyboardInterrupt:
             logger.info("用户中断运行")
         except Exception as e:
             logger.error(f"运行时错误: {e}", exc_info=True)
         finally:
+            if self.channel:
+                self.channel.shutdown()
             logger.info("程序退出")
 
 

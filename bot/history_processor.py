@@ -10,7 +10,6 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from loguru import logger
-import itchat
 
 from services.content_extractor import ContentExtractor
 

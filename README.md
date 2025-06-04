@@ -4,6 +4,8 @@
 
 DailyBot 是一个基于微信的智能信息整理助手，能够自动提取和整理聊天记录中的有价值信息（如论文、文章、视频等），并提供基于RAG（检索增强生成）的智能问答功能。
 
+**重要更新**：为了提高稳定性和安全性，本项目已从 itchat 迁移到 wechaty 框架，参考了 [chatgpt-on-wechat](https://github.com/zhayujie/chatgpt-on-wechat) 项目的架构设计。推荐使用 wechaty-puppet-service 远程连接方式。
+
 ## 主要功能
 
 ### 1. 自动信息提取与整理
@@ -31,7 +33,9 @@ DailyBot 是一个基于微信的智能信息整理助手，能够自动提取�
 - 在合适的类别下插入新内容，或创建新类别
 
 ### 5. 技术特点
-- 基于itchat框架实现微信接口
+- 基于 wechaty 框架实现微信接口（更安全稳定）
+- 支持 wechaty-puppet-service 远程连接（推荐）
+- 采用 Channel 抽象架构，支持多种消息通道扩展
 - 使用OpenAI API进行内容理解和生成
 - 消息持久化存储（SQLite），确保完整的上下文获取
 - 支持Obsidian通过iCloud同步
@@ -51,9 +55,12 @@ DailyBot 是一个基于微信的智能信息整理助手，能够自动提取�
 ```
 dailybot/
 ├── bot/                    # 机器人核心逻辑
-│   ├── wechat_bot.py      # 微信机器人主类
 │   ├── message_handler.py  # 消息处理器
 │   └── history_processor.py # 历史消息处理器
+├── channel/               # 消息通道抽象层
+│   ├── channel.py         # Channel基类
+│   ├── wechat_channel.py  # 微信Channel实现
+│   └── channel_factory.py # Channel工厂
 ├── services/              # 服务层
 │   ├── content_extractor.py   # 内容提取服务
 │   ├── llm_service.py         # LLM调用服务
@@ -74,7 +81,41 @@ dailybot/
 └── app.py               # 主程序入口
 ```
 
+## 架构说明
+
+### Channel 架构
+本项目采用了 Channel 抽象架构，将消息接收、处理、发送的逻辑抽象化：
+- **Channel 基类**：定义了统一的消息处理接口
+- **WechatChannel**：基于 wechaty 实现的微信通道
+- **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
+
+### 为什么使用 wechaty？
+- **更安全**：相比 itchat，wechaty 的实现方式更不容易被封号
+- **更稳定**：支持多种 puppet 实现，可以选择最适合的协议
+- **更活跃**：社区活跃，持续维护更新
+- **跨平台**：支持多种编程语言和平台
+
 ## 快速开始
+
+### 方式一：使用快速启动脚本（推荐）
+
+```bash
+# 克隆项目
+git clone https://github.com/yourusername/dailybot.git
+cd dailybot
+
+# 运行快速启动脚本
+chmod +x scripts/start.sh
+./scripts/start.sh
+
+# 脚本会自动：
+# 1. 创建 .env 文件（如果不存在）
+# 2. 检查必要的配置
+# 3. 创建 config.json（从示例复制）
+# 4. 使用 Docker Compose 启动服务
+```
+
+### 方式二：手动配置
 
 1. 克隆项目
 ```bash
@@ -85,6 +126,8 @@ cd dailybot
 2. 安装依赖
 ```bash
 pip install -r requirements.txt
+# 如果要使用 puppet-service（推荐）
+pip install wechaty-puppet-service
 ```
 
 3. 配置
@@ -94,6 +137,10 @@ pip install -r requirements.txt
   # OpenAI配置
   OPENAI_API_KEY=你的OpenAI_API密钥
   OPENAI_BASE_URL=https://api.openai.com/v1
+  
+  # Wechaty配置（推荐使用 puppet-service）
+  WECHATY_PUPPET_SERVICE_TOKEN=你的puppet服务token
+  WECHATY_PUPPET_SERVICE_ENDPOINT=你的puppet服务地址(可选)
   ```
 - 在 `config.json` 中填写其他配置信息（Obsidian路径等）
 
@@ -112,11 +159,16 @@ python app.py
 ### 基础配置
 ```json
 {
+  "channel_type": "wechat",                   // 消息通道类型
   "wechat": {
-    "single_chat_prefix": ["bot", "@bot"],  // 私聊触发前缀
-    "group_chat_prefix": ["@bot"],          // 群聊触发前缀
-    "group_name_white_list": [],            // 群组白名单，空列表表示需手动添加
-    "nick_name_black_list": []              // 用户黑名单
+    "single_chat_prefix": ["bot", "@bot"],    // 私聊触发前缀
+    "group_chat_prefix": ["@bot"],            // 群聊触发前缀
+    "group_name_white_list": [],              // 群组白名单，空列表表示需手动添加
+    "nick_name_black_list": []                // 用户黑名单
+  },
+  "wechaty_puppet": {
+    "token": "",                              // puppet service token（可选）
+    "endpoint": ""                            // puppet service 地址（可选）
   },
   "openai": {
     // API密钥和base_url从环境变量读取（OPENAI_API_KEY, OPENAI_BASE_URL）
@@ -159,26 +211,47 @@ python app.py
 }
 ```
 
-### Google Docs 配置 (可选)
+### Wechaty Puppet Service 配置（推荐）
 
-若使用 Google Docs 作为笔记后端，请按以下步骤配置：
+wechaty-puppet-service 是一种更稳定的连接方式，通过连接到远程 puppet 服务来控制微信。
 
-1.  **Google Cloud 设置**:
-- 在 [Google Cloud Console](https://console.cloud.google.com/) 创建或选择项目。
-- 启用 "Google Docs API" 和 "Google Drive API"。
+#### 方式一：使用免费 Token（适合测试）
+1. 访问 [Wechaty Token 申请](https://github.com/wechaty/puppet-services) 获取免费测试 token
+2. 配置 token：
+   ```json
+   "wechaty_puppet": {
+     "token": "puppet_padlocal_xxx"
+   }
+   ```
+   或使用环境变量：
+   ```bash
+   export WECHATY_PUPPET_SERVICE_TOKEN=puppet_padlocal_xxx
+   ```
 
-2.  **服务账号及密钥**:
-- 创建服务账号 (路径一般为 API 和服务 > 凭据)。
-- 授予 "编辑者" 角色。
-- 为此服务账号生成 JSON 格式的密钥并下载。
+#### 方式二：使用付费 Token（推荐生产环境）
+1. 购买稳定的 puppet service token
+   - [PadLocal](https://github.com/padlocal/puppet-padlocal-getting-started)：基于 iPad 协议，稳定性高
+   - [XP](https://github.com/wechaty/puppet-xp)：基于 Windows 协议
+   - [WorkPro](https://github.com/wechaty/puppet-service-workpro)：企业微信
 
-3.  **项目配置**:
-- 将下载的 JSON 密钥文件（通常建议命名为 `google_credentials.json`）放入 `config/` 目录。
-- 在 `config/config.json` 文件的 `google_docs` 部分，填写您的Google Docs文档的 `document_id`。
+2. 配置方式同上
 
-4.  **共享文档**:
-- 打开您下载的JSON密钥文件，找到并复制 `client_email` 字段的值。
-- 打开您的目标Google Docs文档，通过"共享"功能，将此 `client_email` 添加为协作者，并授予"编辑者"权限。
+#### 方式三：自建 Puppet Service
+如果你有多余的设备，可以自建 puppet service：
+1. 在另一台设备上运行 puppet provider
+2. 配置 endpoint 指向你的服务：
+   ```json
+   "wechaty_puppet": {
+     "token": "your_token",
+     "endpoint": "192.168.1.100:8080"
+   }
+   ```
+
+### 配置优先级
+程序会按以下优先级读取配置：
+1. 环境变量（最高优先级）
+2. config.json 中的配置
+3. 默认值（如果都没有配置）
 
 ### 群组白名单管理
 
@@ -212,6 +285,27 @@ python app.py
 # 支持的格式：txt、json、html
 # 使用管理命令：#import_history /path/to/export.txt 群组名称
 ```
+
+### Google Docs 配置 (可选)
+
+若使用 Google Docs 作为笔记后端，请按以下步骤配置：
+
+1.  **Google Cloud 设置**:
+- 在 [Google Cloud Console](https://console.cloud.google.com/) 创建或选择项目。
+- 启用 "Google Docs API" 和 "Google Drive API"。
+
+2.  **服务账号及密钥**:
+- 创建服务账号 (路径一般为 API 和服务 > 凭据)。
+- 授予 "编辑者" 角色。
+- 为此服务账号生成 JSON 格式的密钥并下载。
+
+3.  **项目配置**:
+- 将下载的 JSON 密钥文件（通常建议命名为 `google_credentials.json`）放入 `config/` 目录。
+- 在 `config/config.json` 文件的 `google_docs` 部分，填写您的Google Docs文档的 `document_id`。
+
+4.  **共享文档**:
+- 打开您下载的JSON密钥文件，找到并复制 `client_email` 字段的值。
+- 打开您的目标Google Docs文档，通过"共享"功能，将此 `client_email` 添加为协作者，并授予"编辑者"权限。
 
 ## 新功能说明
 
@@ -296,11 +390,61 @@ sudo systemctl start dailybot
 # 构建镜像
 docker build -t dailybot .
 
-# 运行容器
-docker run -d --name dailybot -v /path/to/config:/app/config dailybot
+# 运行容器（使用 puppet-service）
+docker run -d --name dailybot \
+  -v /path/to/config:/app/config \
+  -e WECHATY_PUPPET_SERVICE_TOKEN=your_token \
+  -e WECHATY_PUPPET_SERVICE_ENDPOINT=your_endpoint \
+  dailybot
+```
+
+### 使用 docker-compose
+创建 `docker-compose.yml`：
+```yaml
+version: '3'
+services:
+  dailybot:
+    image: dailybot
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - WECHATY_PUPPET_SERVICE_TOKEN=${WECHATY_PUPPET_SERVICE_TOKEN}
+      - WECHATY_PUPPET_SERVICE_ENDPOINT=${WECHATY_PUPPET_SERVICE_ENDPOINT}
+    restart: unless-stopped
 ```
 
 ## 常见问题
+
+### Q: 如何选择合适的 Puppet？
+A: 
+- **测试开发**：使用免费的 puppet_padlocal token
+- **个人使用**：PadLocal（基于 iPad 协议，稳定）
+- **企业使用**：WorkPro（企业微信）
+- **Windows环境**：XP（基于 Windows 协议）
+
+### Q: 使用 puppet-service 的优势？
+A:
+1. **更稳定**：不容易掉线和封号
+2. **更灵活**：可以在服务器部署，puppet 运行在其他设备
+3. **更安全**：业务逻辑和微信登录分离
+4. **支持多开**：可以同时运行多个机器人
+
+### Q: puppet-service 连接失败怎么办？
+A:
+1. 检查 token 是否正确
+2. 检查网络连接（可能需要代理）
+3. 查看日志中的具体错误信息
+4. 确认 puppet service 是否在线
+
+### Q: wechaty 登录失败怎么办？
+A: 
+1. 检查网络连接
+2. 尝试删除登录缓存重新扫码
+3. 如果使用 puppet service，检查 token 是否有效
+4. 查看日志获取详细错误信息
 
 ### Q: 如何处理大量历史消息？
 A: 可以使用批量导入功能，或者分批次逐步添加群组到白名单。系统会自动从消息存储中获取上下文。
@@ -343,8 +487,12 @@ A:
 - [x] 消息持久化存储
 - [x] 动态分类管理
 - [x] 智能去重功能
+- [x] 从 itchat 迁移到 wechaty
+- [x] Channel 抽象架构
+- [x] 支持 wechaty-puppet-service
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
+- [ ] 支持企业微信、飞书等更多通道
 
 ## 贡献指南
 

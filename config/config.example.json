@@ -1,4 +1,6 @@
 {
+  "channel_type": "wechat",
+  
   "wechat": {
     "single_chat_prefix": ["bot", "@bot"],
     "single_chat_reply_prefix": "[Bot] ",
@@ -6,6 +8,11 @@
     "group_chat_reply_prefix": "",
     "group_name_white_list": [],
     "nick_name_black_list": []
+  },
+  
+  "wechaty_puppet": {
+    "token": "",
+    "endpoint": ""
   },
   
   "openai": {

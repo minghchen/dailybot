@@ -1,6 +1,6 @@
 # 微信机器人框架
-itchat-uos==1.5.0.dev0
 wechaty>=0.10.7
+# wechaty-puppet-service>=0.8.10  # 可选，用于连接puppet service
 
 # OpenAI相关
 openai>=1.0.0
