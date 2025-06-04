@@ -89,7 +89,13 @@ pip install -r requirements.txt
 
 3. 配置
 - 复制 `config/config.example.json` 为 `config/config.json`
-- 填写必要的配置信息（OpenAI API Key、Obsidian路径等）
+- 创建 `.env` 文件并设置API密钥等敏感信息：
+  ```bash
+  # OpenAI配置
+  OPENAI_API_KEY=你的OpenAI_API密钥
+  OPENAI_BASE_URL=https://api.openai.com/v1
+  ```
+- 在 `config.json` 中填写其他配置信息（Obsidian路径等）
 
 4. 运行升级脚本（如果是从旧版本升级）
 ```bash
@@ -113,9 +119,11 @@ python app.py
     "nick_name_black_list": []              // 用户黑名单
   },
   "openai": {
-    "api_key": "YOUR_OPENAI_API_KEY",       // OpenAI API密钥
+    // API密钥和base_url从环境变量读取（OPENAI_API_KEY, OPENAI_BASE_URL）
     "model": "gpt-4o-mini",                 // 使用的模型
-    "temperature": 0.7                      // 生成温度
+    "temperature": 0.7,                     // 生成温度
+    "max_tokens": 2000,                     // 最大生成长度
+    "proxy": ""                             // 代理设置（可选）
   },
   "obsidian": {
     "vault_path": "/path/to/your/vault",    // Obsidian仓库路径
@@ -150,6 +158,27 @@ python app.py
   }
 }
 ```
+
+### Google Docs 配置 (可选)
+
+若使用 Google Docs 作为笔记后端，请按以下步骤配置：
+
+1.  **Google Cloud 设置**:
+- 在 [Google Cloud Console](https://console.cloud.google.com/) 创建或选择项目。
+- 启用 "Google Docs API" 和 "Google Drive API"。
+
+2.  **服务账号及密钥**:
+- 创建服务账号 (路径一般为 API 和服务 > 凭据)。
+- 授予 "编辑者" 角色。
+- 为此服务账号生成 JSON 格式的密钥并下载。
+
+3.  **项目配置**:
+- 将下载的 JSON 密钥文件（通常建议命名为 `google_credentials.json`）放入 `config/` 目录。
+- 在 `config/config.json` 文件的 `google_docs` 部分，填写您的Google Docs文档的 `document_id`。
+
+4.  **共享文档**:
+- 打开您下载的JSON密钥文件，找到并复制 `client_email` 字段的值。
+- 打开您的目标Google Docs文档，通过"共享"功能，将此 `client_email` 添加为协作者，并授予"编辑者"权限。
 
 ### 群组白名单管理
 

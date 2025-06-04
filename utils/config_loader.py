@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any
 from loguru import logger
+from dotenv import load_dotenv, find_dotenv
 
 
 class ConfigLoader:
@@ -26,9 +27,15 @@ class ConfigLoader:
         Returns:
             配置字典
         """
+        # 加载.env文件
+        load_dotenv(find_dotenv())
+        
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
+            
+            # 从环境变量覆盖敏感配置
+            ConfigLoader._load_env_vars(config)
             
             # 验证配置
             ConfigLoader._validate_config(config)
@@ -49,6 +56,25 @@ class ConfigLoader:
             raise Exception(f"加载配置文件失败: {e}")
     
     @staticmethod
+    def _load_env_vars(config: Dict[str, Any]):
+        """从环境变量加载配置"""
+        # OpenAI配置
+        if 'openai' not in config:
+            config['openai'] = {}
+        
+        # 从环境变量获取API密钥
+        api_key = os.getenv('OPENAI_API_KEY')
+        if api_key:
+            config['openai']['api_key'] = api_key
+            logger.info("从环境变量加载 OpenAI API Key")
+        
+        # 从环境变量获取base URL
+        base_url = os.getenv('OPENAI_BASE_URL')
+        if base_url:
+            config['openai']['base_url'] = base_url
+            logger.info("从环境变量加载 OpenAI Base URL")
+    
+    @staticmethod
     def _validate_config(config: Dict[str, Any]):
         """验证配置的必要字段"""
         required_fields = {
@@ -62,12 +88,12 @@ class ConfigLoader:
                 raise ValueError(f"配置缺少必要部分: {section}")
             
             for field in fields:
-                if field not in config[section]:
+                if field not in config[section] or not config[section][field]:
                     raise ValueError(f"配置缺少必要字段: {section}.{field}")
                 
                 # 检查API Key是否为占位符
-                if field == 'api_key' and config[section][field] == 'YOUR_OPENAI_API_KEY':
-                    raise ValueError("请在配置文件中设置有效的 OpenAI API Key")
+                if field == 'api_key' and config[section][field] in ['YOUR_OPENAI_API_KEY', 'your_openai_api_key_here']:
+                    raise ValueError("请在配置文件或环境变量中设置有效的 OpenAI API Key")
     
     @staticmethod
     def _process_paths(config: Dict[str, Any]):
