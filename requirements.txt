@@ -2,6 +2,12 @@
 wechaty>=0.10.7
 # wechaty-puppet-service>=0.8.10  # 可选，用于连接puppet service
 
+# JS Wechaty通道依赖
+websocket-client>=1.6.4  # 用于js_wechaty通道
+
+# WeChat-Ferry依赖（仅Windows）
+# wcferry>=39.0.10  # 用于wcf通道，仅Windows环境需要
+
 # OpenAI相关
 openai>=1.0.0
 tiktoken>=0.5.1

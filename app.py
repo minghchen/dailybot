@@ -104,7 +104,7 @@ class DailyBot:
             
             # 初始化Channel
             channel_type = self.config.get('channel_type', 'wechat')
-            self.channel = ChannelFactory.create_channel(channel_type, self.config)
+            self.channel = ChannelFactory.create_channel(self.config)
             if not self.channel:
                 logger.error(f"创建通道失败: {channel_type}")
                 sys.exit(1)

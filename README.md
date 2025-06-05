@@ -1,10 +1,17 @@
-# DailyBot - 微信信息整理AI助手
+# DailyBot（日报机器人）
 
-## 项目简介
+一个智能的聊天机器人，能够自动提取、总结和整理聊天记录中的有价值信息到笔记系统。支持多种微信登录方式，包括JavaScript Wechaty和WeChat-Ferry (wcf)。
 
-DailyBot 是一个基于微信的智能信息整理助手，能够自动提取和整理聊天记录中的有价值信息（如论文、文章、视频等），并提供基于RAG（检索增强生成）的智能问答功能。
+## 🚨 重要声明
 
-**重要更新**：为了提高稳定性和安全性，本项目已从 itchat 迁移到 wechaty 框架，参考了 [chatgpt-on-wechat](https://github.com/zhayujie/chatgpt-on-wechat) 项目的架构设计。推荐使用 wechaty-puppet-service 远程连接方式。
+在使用本项目前，请务必了解：
+
+**关于微信登录安全性**：
+- 使用第三方微信登录方案存在一定的封号风险
+- 免费的web协议（wechaty-puppet-wechat4u）存在较高封号风险
+- 强烈建议使用PadLocal等付费协议，或wcf方案（Windows）
+- 请务必阅读 [防封号指南](docs/anti_ban_guide.md) 了解最佳实践
+- 建议使用小号测试，避免主号被封
 
 ## 主要功能
 
@@ -33,14 +40,29 @@ DailyBot 是一个基于微信的智能信息整理助手，能够自动提取�
 - 在合适的类别下插入新内容，或创建新类别
 
 ### 5. 技术特点
-- 基于 wechaty 框架实现微信接口（更安全稳定）
-- 支持 wechaty-puppet-service 远程连接（推荐）
+- 支持两种微信登录方案：JS Wechaty（跨平台）和 wcf（Windows）
 - 采用 Channel 抽象架构，支持多种消息通道扩展
 - 使用OpenAI API进行内容理解和生成
 - 消息持久化存储（SQLite），确保完整的上下文获取
 - 支持Obsidian通过iCloud同步
 - 支持Google Docs云端存储
 - 可部署在云服务器上
+
+## 微信登录方案
+
+本项目支持两种微信登录方案：
+
+### 1. JS Wechaty（跨平台）
+- 需要运行独立的JavaScript服务
+- 通过WebSocket与Python主程序通信
+- 支持多种协议（推荐使用PadLocal付费协议）
+- 详见 [微信登录方案说明](docs/wechat_login_methods.md#方案一javascript-wechaty)
+
+### 2. WeChat-Ferry (wcf)（仅Windows）
+- 基于Hook技术，直接操作微信PC客户端
+- 稳定性高，但仅支持Windows系统
+- 需要特定版本的微信客户端
+- 详见 [微信登录方案说明](docs/wechat_login_methods.md#方案二wechat-ferry-wcf)
 
 ## 笔记格式示例
 
@@ -59,7 +81,8 @@ dailybot/
 │   └── history_processor.py # 历史消息处理器
 ├── channel/               # 消息通道抽象层
 │   ├── channel.py         # Channel基类
-│   ├── wechat_channel.py  # 微信Channel实现
+│   ├── js_wechaty_channel.py  # JS Wechaty通道实现
+│   ├── wcf_channel.py     # WeChat-Ferry通道实现
 │   └── channel_factory.py # Channel工厂
 ├── services/              # 服务层
 │   ├── content_extractor.py   # 内容提取服务
@@ -76,7 +99,8 @@ dailybot/
 │   └── config.json       # 配置文件
 ├── plugins/              # 插件系统
 ├── scripts/              # 脚本工具
-│   └── upgrade.py        # 升级脚本
+│   ├── upgrade.py        # 升级脚本
+│   └── js_wechaty_server.example.js  # JS Wechaty服务示例
 ├── requirements.txt      # 依赖包
 └── app.py               # 主程序入口
 ```
@@ -86,14 +110,9 @@ dailybot/
 ### Channel 架构
 本项目采用了 Channel 抽象架构，将消息接收、处理、发送的逻辑抽象化：
 - **Channel 基类**：定义了统一的消息处理接口
-- **WechatChannel**：基于 wechaty 实现的微信通道
+- **JSWechatyChannel**：基于 JavaScript Wechaty 实现的微信通道
+- **WcfChannel**：基于 WeChat-Ferry 实现的Windows微信通道
 - **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
-
-### 为什么使用 wechaty？
-- **更安全**：相比 itchat，wechaty 的实现方式更不容易被封号
-- **更稳定**：支持多种 puppet 实现，可以选择最适合的协议
-- **更活跃**：社区活跃，持续维护更新
-- **跨平台**：支持多种编程语言和平台
 
 ## 快速开始
 
@@ -126,11 +145,13 @@ cd dailybot
 2. 安装依赖
 ```bash
 pip install -r requirements.txt
-# 如果要使用 puppet-service（推荐）
-pip install wechaty-puppet-service
 ```
 
-3. 配置
+3. 选择并配置登录方案
+- **JS Wechaty**：参考 [微信登录方案说明](docs/wechat_login_methods.md#方案一javascript-wechaty)
+- **wcf**：参考 [微信登录方案说明](docs/wechat_login_methods.md#方案二wechat-ferry-wcf)
+
+4. 配置
 - 复制 `config/config.example.json` 为 `config/config.json`
 - 创建 `.env` 文件并设置API密钥等敏感信息：
   ```bash
@@ -138,18 +159,18 @@ pip install wechaty-puppet-service
   OPENAI_API_KEY=你的OpenAI_API密钥
   OPENAI_BASE_URL=https://api.openai.com/v1
   
-  # Wechaty配置（推荐使用 puppet-service）
-  WECHATY_PUPPET_SERVICE_TOKEN=你的puppet服务token
-  WECHATY_PUPPET_SERVICE_ENDPOINT=你的puppet服务地址(可选)
+  # JS Wechaty配置（如果使用PadLocal）
+  WECHATY_PUPPET=wechaty-puppet-padlocal
+  WECHATY_PUPPET_SERVICE_TOKEN=你的padlocal_token
   ```
-- 在 `config.json` 中填写其他配置信息（Obsidian路径等）
+- 在 `config.json` 中填写其他配置信息
 
-4. 运行升级脚本（如果是从旧版本升级）
+5. 运行升级脚本（如果是从旧版本升级）
 ```bash
 python scripts/upgrade.py
 ```
 
-5. 运行
+6. 运行
 ```bash
 python app.py
 ```
@@ -159,29 +180,44 @@ python app.py
 ### 基础配置
 ```json
 {
-  "channel_type": "wechat",                   // 消息通道类型
-  "wechat": {
-    "single_chat_prefix": ["bot", "@bot"],    // 私聊触发前缀
-    "group_chat_prefix": ["@bot"],            // 群聊触发前缀
-    "group_name_white_list": [],              // 群组白名单，空列表表示需手动添加
-    "nick_name_black_list": []                // 用户黑名单
+  "channel_type": "js_wechaty",              // 消息通道类型：js_wechaty|wcf
+  
+  // JS Wechaty配置（跨平台）
+  "js_wechaty": {
+    "ws_url": "ws://localhost:8788",         // WebSocket服务地址
+    "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
+    "group_chat_prefix": ["@bot"],           // 群聊触发前缀
+    "group_name_white_list": [],             // 群组白名单
+    "message_limit_per_minute": 20,          // 每分钟消息限制
+    "min_reply_delay": 2,                    // 最小回复延迟（秒）
+    "max_reply_delay": 5                     // 最大回复延迟（秒）
   },
-  "wechaty_puppet": {
-    "token": "",                              // puppet service token（可选）
-    "endpoint": ""                            // puppet service 地址（可选）
+  
+  // wcf配置（仅Windows）
+  "wcf": {
+    "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
+    "group_chat_prefix": ["@bot"],           // 群聊触发前缀
+    "group_name_white_list": [],             // 群组白名单
+    "group_at_sender": true                  // 群聊是否@发送者
   },
+  
   "openai": {
-    // API密钥和base_url从环境变量读取（OPENAI_API_KEY, OPENAI_BASE_URL）
-    "model": "gpt-4o-mini",                 // 使用的模型
-    "temperature": 0.7,                     // 生成温度
-    "max_tokens": 2000,                     // 最大生成长度
-    "proxy": ""                             // 代理设置（可选）
+    // API密钥和base_url从环境变量读取
+    "model": "gpt-4o-mini",                  // 使用的模型
+    "temperature": 0.7,                      // 生成温度
+    "max_tokens": 2000,                      // 最大生成长度
+    "conversation_max_tokens": 1000,         // 对话历史最大长度
+    "proxy": ""                              // 代理设置（可选）
   },
+  
+  "note_backend": "obsidian",                // 笔记后端：obsidian|google_docs
+  
   "obsidian": {
-    "vault_path": "/path/to/your/vault",    // Obsidian仓库路径
-    "daily_notes_folder": "Daily Notes",    // 日记文件夹
+    "vault_path": "/path/to/your/vault",     // Obsidian仓库路径
+    "daily_notes_folder": "Daily Notes",     // 日记文件夹
     "knowledge_base_folder": "Knowledge Base", // 知识库文件夹
-    "note_files": [                         // 笔记文件配置（可选）
+    "template_path": "Templates/Daily Note Template.md", // 日记模板路径
+    "note_files": [                          // 笔记文件配置（可选）
       {
         "name": "AI研究笔记",
         "filename": "AI研究笔记.md",
@@ -194,9 +230,10 @@ python app.py
       }
     ]
   },
+  
   "google_docs": {
     "credentials_file": "config/google_credentials.json",
-    "note_documents": [                     // Google Docs文档配置
+    "note_documents": [                      // Google Docs文档配置
       {
         "name": "AI研究笔记",
         "document_id": "YOUR_DOC_ID",
@@ -204,48 +241,45 @@ python app.py
       }
     ]
   },
+  
+  "content_extraction": {
+    "context_time_window": 60,               // 上下文时间窗口（分钟）
+    "auto_extract_enabled": true,            // 是否自动提取
+    "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
+    "silent_mode": true,                     // 静默模式
+    "max_summary_length": 500                // 最大总结长度
+  },
+  
+  "rag": {
+    "enabled": true,                         // 是否启用RAG
+    "embedding_model": "text-embedding-ada-002",
+    "vector_store_path": "data/vector_store",
+    "chunk_size": 1000,
+    "chunk_overlap": 200,
+    "top_k": 5,
+    "similarity_threshold": 0.7
+  },
+  
+  "bilibili": {
+    "summarizer_api": "",                    // B站视频总结API
+    "cookies": ""                            // B站cookies
+  },
+  
   "system": {
-    "message_db_path": "data/messages.db",  // 消息数据库路径
-    "message_retention_days": 30            // 消息保留天数
+    "log_level": "INFO",
+    "message_queue_size": 100,
+    "auto_save_interval": 300,
+    "timezone": "Asia/Shanghai",
+    "admin_list": [],                        // 管理员列表
+    "whitelist_file": "config/group_whitelist.json",
+    "history_batch_size": 50,
+    "history_process_delay": 0.5,
+    "max_history_days": 30,
+    "message_db_path": "data/messages.db",   // 消息数据库路径
+    "message_retention_days": 30             // 消息保留天数
   }
 }
 ```
-
-### Wechaty Puppet Service 配置（推荐）
-
-wechaty-puppet-service 是一种更稳定的连接方式，通过连接到远程 puppet 服务来控制微信。
-
-#### 方式一：使用免费 Token（适合测试）
-1. 访问 [Wechaty Token 申请](https://github.com/wechaty/puppet-services) 获取免费测试 token
-2. 配置 token：
-   ```json
-   "wechaty_puppet": {
-     "token": "puppet_padlocal_xxx"
-   }
-   ```
-   或使用环境变量：
-   ```bash
-   export WECHATY_PUPPET_SERVICE_TOKEN=puppet_padlocal_xxx
-   ```
-
-#### 方式二：使用付费 Token（推荐生产环境）
-1. 购买稳定的 puppet service token
-   - [PadLocal](https://github.com/padlocal/puppet-padlocal-getting-started)：基于 iPad 协议，稳定性高
-   - [XP](https://github.com/wechaty/puppet-xp)：基于 Windows 协议
-   - [WorkPro](https://github.com/wechaty/puppet-service-workpro)：企业微信
-
-2. 配置方式同上
-
-#### 方式三：自建 Puppet Service
-如果你有多余的设备，可以自建 puppet service：
-1. 在另一台设备上运行 puppet provider
-2. 配置 endpoint 指向你的服务：
-   ```json
-   "wechaty_puppet": {
-     "token": "your_token",
-     "endpoint": "192.168.1.100:8080"
-   }
-   ```
 
 ### 配置优先级
 程序会按以下优先级读取配置：
@@ -290,22 +324,22 @@ wechaty-puppet-service 是一种更稳定的连接方式，通过连接到远程
 
 若使用 Google Docs 作为笔记后端，请按以下步骤配置：
 
-1.  **Google Cloud 设置**:
-- 在 [Google Cloud Console](https://console.cloud.google.com/) 创建或选择项目。
-- 启用 "Google Docs API" 和 "Google Drive API"。
+1. **Google Cloud 设置**:
+   - 在 [Google Cloud Console](https://console.cloud.google.com/) 创建或选择项目
+   - 启用 "Google Docs API" 和 "Google Drive API"
 
-2.  **服务账号及密钥**:
-- 创建服务账号 (路径一般为 API 和服务 > 凭据)。
-- 授予 "编辑者" 角色。
-- 为此服务账号生成 JSON 格式的密钥并下载。
+2. **服务账号及密钥**:
+   - 创建服务账号 (路径一般为 API 和服务 > 凭据)
+   - 授予 "编辑者" 角色
+   - 为此服务账号生成 JSON 格式的密钥并下载
 
-3.  **项目配置**:
-- 将下载的 JSON 密钥文件（通常建议命名为 `google_credentials.json`）放入 `config/` 目录。
-- 在 `config/config.json` 文件的 `google_docs` 部分，填写您的Google Docs文档的 `document_id`。
+3. **项目配置**:
+   - 将下载的 JSON 密钥文件（通常建议命名为 `google_credentials.json`）放入 `config/` 目录
+   - 在 `config/config.json` 文件的 `google_docs` 部分，填写您的Google Docs文档的 `document_id`
 
-4.  **共享文档**:
-- 打开您下载的JSON密钥文件，找到并复制 `client_email` 字段的值。
-- 打开您的目标Google Docs文档，通过"共享"功能，将此 `client_email` 添加为协作者，并授予"编辑者"权限。
+4. **共享文档**:
+   - 打开您下载的JSON密钥文件，找到并复制 `client_email` 字段的值
+   - 打开您的目标Google Docs文档，通过"共享"功能，将此 `client_email` 添加为协作者，并授予"编辑者"权限
 
 ## 新功能说明
 
@@ -390,11 +424,11 @@ sudo systemctl start dailybot
 # 构建镜像
 docker build -t dailybot .
 
-# 运行容器（使用 puppet-service）
+# 运行容器
 docker run -d --name dailybot \
   -v /path/to/config:/app/config \
-  -e WECHATY_PUPPET_SERVICE_TOKEN=your_token \
-  -e WECHATY_PUPPET_SERVICE_ENDPOINT=your_endpoint \
+  -v /path/to/data:/app/data \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
   dailybot
 ```
 
@@ -411,40 +445,32 @@ services:
       - ./logs:/app/logs
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - WECHATY_PUPPET_SERVICE_TOKEN=${WECHATY_PUPPET_SERVICE_TOKEN}
-      - WECHATY_PUPPET_SERVICE_ENDPOINT=${WECHATY_PUPPET_SERVICE_ENDPOINT}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
     restart: unless-stopped
 ```
 
 ## 常见问题
 
-### Q: 如何选择合适的 Puppet？
+### Q: 如何选择登录方案？
 A: 
-- **测试开发**：使用免费的 puppet_padlocal token
-- **个人使用**：PadLocal（基于 iPad 协议，稳定）
-- **企业使用**：WorkPro（企业微信）
-- **Windows环境**：XP（基于 Windows 协议）
+- **Windows用户**：推荐使用wcf，稳定性高
+- **Mac/Linux用户**：使用JS Wechaty
+- **长期稳定运行**：建议购买PadLocal协议（JS Wechaty）
 
-### Q: 使用 puppet-service 的优势？
+### Q: 如何避免封号？
 A:
-1. **更稳定**：不容易掉线和封号
-2. **更灵活**：可以在服务器部署，puppet 运行在其他设备
-3. **更安全**：业务逻辑和微信登录分离
-4. **支持多开**：可以同时运行多个机器人
+1. 不要使用免费的web协议
+2. 控制消息发送频率
+3. 使用小号测试
+4. 购买付费协议（如PadLocal）
+5. 详见 [防封号指南](docs/anti_ban_guide.md)
 
-### Q: puppet-service 连接失败怎么办？
-A:
-1. 检查 token 是否正确
-2. 检查网络连接（可能需要代理）
-3. 查看日志中的具体错误信息
-4. 确认 puppet service 是否在线
-
-### Q: wechaty 登录失败怎么办？
+### Q: 登录失败怎么办？
 A: 
-1. 检查网络连接
-2. 尝试删除登录缓存重新扫码
-3. 如果使用 puppet service，检查 token 是否有效
-4. 查看日志获取详细错误信息
+1. 检查对应的服务是否启动（JS服务或微信客户端）
+2. 查看日志中的具体错误信息
+3. 确认配置文件是否正确
+4. 尝试重新登录
 
 ### Q: 如何处理大量历史消息？
 A: 可以使用批量导入功能，或者分批次逐步添加群组到白名单。系统会自动从消息存储中获取上下文。
@@ -455,7 +481,7 @@ A: 可能是网站有反爬虫措施，可以在 `content_extractor.py` 中添�
 ### Q: 如何备份数据？
 A: 
 - Obsidian笔记通过iCloud自动同步
-- 向量数据库在 `data/chroma_db` 目录
+- 向量数据库在 `data/vector_store` 目录
 - 群组白名单在 `config/group_whitelist.json`
 - 消息数据库在 `data/messages.db`
 
@@ -487,9 +513,10 @@ A:
 - [x] 消息持久化存储
 - [x] 动态分类管理
 - [x] 智能去重功能
-- [x] 从 itchat 迁移到 wechaty
 - [x] Channel 抽象架构
-- [x] 支持 wechaty-puppet-service
+- [x] JS Wechaty支持
+- [x] WeChat-Ferry (wcf)支持
+- [x] 防封号措施
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
 - [ ] 支持企业微信、飞书等更多通道
