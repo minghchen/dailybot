@@ -57,4 +57,8 @@ ipython>=8.18.1
 rich>=13.7.0
 
 # 数据库（SQLite是Python内置的，但我们可能需要一些辅助工具）
-aiosqlite>=0.19.0 
+aiosqlite>=0.19.0
+
+# Mac微信Hook功能依赖（仅macOS）
+# pysqlcipher3>=1.2.0  # 用于解密微信数据库，需要先安装sqlcipher: brew install sqlcipher
+# pyobjc>=10.0  # 用于Objective-C桥接，仅macOS需要 

@@ -37,6 +37,21 @@
     "_comment": "wcf仅支持Windows系统，需要特定版本微信客户端"
   },
   
+  "mac_wechat": {
+    "mode": "silent",
+    "poll_interval": 60,
+    "single_chat_prefix": ["bot", "@bot"],
+    "single_chat_reply_prefix": "[bot] ",
+    "group_chat_prefix": ["@bot"],
+    "group_name_white_list": ["ChatGPT测试群", "ChatGPT测试群2"],
+    "enable_hook": false,
+    "auto_reply_rules": {
+      "你好": "你好！有什么可以帮助你的吗？",
+      "在吗": "在的，请说"
+    },
+    "_comment": "Mac微信通道：silent模式安全稳定，hook模式需要关闭SIP并使用旧版微信"
+  },
+  
   "openai": {
     "api_key": "YOUR_OPENAI_API_KEY",
     "api_base": "https://api.openai.com/v1",

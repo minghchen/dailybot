@@ -1,6 +1,6 @@
 # DailyBot（日报机器人）
 
-一个智能的聊天机器人，能够自动提取、总结和整理聊天记录中的有价值信息到笔记系统。支持多种微信登录方式，包括JavaScript Wechaty和WeChat-Ferry (wcf)。
+一个智能的聊天机器人，能够自动提取、总结和整理聊天记录中的有价值信息到笔记系统。支持多种微信登录方式，可跨平台运行。
 
 ## 🚨 重要声明
 
@@ -40,7 +40,7 @@
 - 在合适的类别下插入新内容，或创建新类别
 
 ### 5. 技术特点
-- 支持两种微信登录方案：JS Wechaty（跨平台）和 wcf（Windows）
+- 支持三种微信通道：JS Wechaty（跨平台）、wcf（Windows）和Mac微信（macOS）
 - 采用 Channel 抽象架构，支持多种消息通道扩展
 - 使用OpenAI API进行内容理解和生成
 - 消息持久化存储（SQLite），确保完整的上下文获取
@@ -50,7 +50,7 @@
 
 ## 微信登录方案
 
-本项目支持两种微信登录方案：
+本项目支持三种微信登录方案：
 
 ### 1. JS Wechaty（跨平台）
 - 需要运行独立的JavaScript服务
@@ -64,6 +64,12 @@
 - 需要特定版本的微信客户端
 - 详见 [微信登录方案说明](docs/wechat_login_methods.md#方案二wechat-ferry-wcf)
 
+### 3. Mac微信通道（仅macOS）🆕
+- 专为macOS设计的原生方案
+- **静默读取模式**：定期读取聊天记录数据库，安全稳定
+- **Hook模式**：实时消息监听和自动回复（需要关闭SIP）
+- 详见 [Mac微信通道使用指南](docs/mac_wechat_hook_guide.md)
+
 ## 笔记格式示例
 
 ```markdown
@@ -76,33 +82,45 @@
 
 ```
 dailybot/
-├── bot/                    # 机器人核心逻辑
-│   ├── message_handler.py  # 消息处理器
-│   └── history_processor.py # 历史消息处理器
-├── channel/               # 消息通道抽象层
-│   ├── channel.py         # Channel基类
-│   ├── js_wechaty_channel.py  # JS Wechaty通道实现
-│   ├── wcf_channel.py     # WeChat-Ferry通道实现
-│   └── channel_factory.py # Channel工厂
-├── services/              # 服务层
-│   ├── content_extractor.py   # 内容提取服务
-│   ├── llm_service.py         # LLM调用服务
-│   ├── note_manager.py        # 笔记管理服务
-│   ├── google_docs_manager.py # Google Docs管理器
-│   └── rag_service.py         # RAG服务
-├── utils/                 # 工具类
-│   ├── link_parser.py     # 链接解析器
-│   ├── time_utils.py      # 时间工具
-│   ├── video_summarizer.py # 视频总结工具
-│   └── message_storage.py  # 消息持久化存储
-├── config/               # 配置文件
-│   └── config.json       # 配置文件
-├── plugins/              # 插件系统
-├── scripts/              # 脚本工具
-│   ├── upgrade.py        # 升级脚本
+├── app.py                      # 主程序入口
+├── bot/                        # 机器人核心逻辑
+│   ├── message_handler.py      # 消息处理器
+│   └── history_processor.py    # 历史消息处理器
+├── channel/                    # 消息通道抽象层
+│   ├── channel.py              # Channel基类
+│   ├── channel_factory.py      # Channel工厂
+│   ├── js_wechaty_channel.py   # JS Wechaty通道实现
+│   ├── mac_wechat_channel.py   # Mac微信通道实现
+│   └── wcf_channel.py          # WeChat-Ferry通道实现
+├── services/                   # 服务层
+│   ├── content_extractor.py    # 内容提取服务
+│   ├── llm_service.py          # LLM调用服务
+│   ├── note_manager.py         # 笔记管理服务
+│   ├── google_docs_manager.py  # Google Docs管理器
+│   └── rag_service.py          # RAG服务
+├── utils/                      # 工具类
+│   ├── link_parser.py          # 链接解析器
+│   ├── time_utils.py           # 时间工具
+│   ├── video_summarizer.py     # 视频总结工具
+│   └── message_storage.py      # 消息持久化存储
+├── config/                     # 配置文件目录
+│   └── config.example.json     # 配置文件示例
+├── data/                       # 数据存储目录
+│   ├── messages.db             # 消息数据库
+│   └── vector_store/           # 向量数据库
+├── logs/                       # 日志目录
+├── plugins/                    # 插件系统
+├── scripts/                    # 脚本工具
+│   ├── start.sh                # 快速启动脚本
+│   ├── start_mac.sh            # Mac专用启动脚本
+│   ├── upgrade.py              # 升级脚本
 │   └── js_wechaty_server.example.js  # JS Wechaty服务示例
-├── requirements.txt      # 依赖包
-└── app.py               # 主程序入口
+├── docs/                       # 文档目录
+├── templates/                  # 模板文件
+├── Dockerfile                  # Docker镜像配置
+├── docker-compose.yml          # Docker Compose配置
+├── requirements.txt            # Python依赖
+└── README.md                   # 项目说明文档
 ```
 
 ## 架构说明
@@ -114,7 +132,33 @@ dailybot/
 - **WcfChannel**：基于 WeChat-Ferry 实现的Windows微信通道
 - **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
 
+## 环境要求
+
+- Python 3.8+
+- 根据使用的通道有不同要求：
+  - JS Wechaty通道：需要Node.js环境
+  - WCF通道：仅支持Windows系统
+  - Mac微信通道：仅支持macOS系统
+
 ## 快速开始
+
+### Mac用户专属快速启动 🆕
+
+```bash
+# 克隆项目
+git clone https://github.com/yourusername/dailybot.git
+cd dailybot
+
+# 运行Mac专用启动脚本
+./scripts/start_mac.sh
+
+# 脚本会自动：
+# 1. 检查环境依赖
+# 2. 安装必要组件
+# 3. 创建配置文件
+# 4. 引导你选择运行模式
+# 5. 启动服务
+```
 
 ### 方式一：使用快速启动脚本（推荐）
 
@@ -150,6 +194,9 @@ pip install -r requirements.txt
 3. 选择并配置登录方案
 - **JS Wechaty**：参考 [微信登录方案说明](docs/wechat_login_methods.md#方案一javascript-wechaty)
 - **wcf**：参考 [微信登录方案说明](docs/wechat_login_methods.md#方案二wechat-ferry-wcf)
+- **Mac微信**：
+  - 静默模式（默认）：无需特殊配置，设置 `channel_type` 为 `mac_wechat` 即可
+  - Hook模式：需要关闭SIP，设置 `MAC_WECHAT_USE_HOOK=true` 环境变量
 
 4. 配置
 - 复制 `config/config.example.json` 为 `config/config.json`
@@ -162,25 +209,26 @@ pip install -r requirements.txt
   # JS Wechaty配置（如果使用PadLocal）
   WECHATY_PUPPET=wechaty-puppet-padlocal
   WECHATY_PUPPET_SERVICE_TOKEN=你的padlocal_token
+  
+  # Mac微信Hook模式配置（可选）
+  MAC_WECHAT_USE_HOOK=true
   ```
-- 在 `config.json` 中填写其他配置信息
+- 根据你选择的通道类型，在 `config.json` 中设置相应的配置
 
-5. 运行升级脚本（如果是从旧版本升级）
-```bash
-python scripts/upgrade.py
-```
-
-6. 运行
+5. 运行
 ```bash
 python app.py
 ```
 
 ## 配置说明
 
-### 基础配置
+配置文件 `config/config.example.json` 包含了所有支持的配置选项。根据你选择的通道类型（`channel_type`），只需要配置对应的部分即可。
+
+### 基础配置示例
+
 ```json
 {
-  "channel_type": "js_wechaty",              // 消息通道类型：js_wechaty|wcf
+  "channel_type": "js_wechaty",  // 选择通道类型：js_wechaty | wcf | mac_wechat
   
   // JS Wechaty配置（跨平台）
   "js_wechaty": {
@@ -201,6 +249,20 @@ python app.py
     "group_at_sender": true                  // 群聊是否@发送者
   },
   
+  // Mac微信配置（仅macOS）
+  "mac_wechat": {
+    "mode": "silent",                        // 运行模式：silent|hook
+    "poll_interval": 60,                     // 静默模式轮询间隔（秒）
+    "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
+    "group_chat_prefix": ["@bot"],           // 群聊触发前缀
+    "group_name_white_list": [],             // 群组白名单
+    "enable_hook": false,                    // 是否启用Hook模式
+    "auto_reply_rules": {                    // Hook模式自动回复规则
+      "你好": "你好！有什么可以帮助你的吗？",
+      "在吗": "在的，请说"
+    }
+  },
+  
   "openai": {
     // API密钥和base_url从环境变量读取
     "model": "gpt-4o-mini",                  // 使用的模型
@@ -210,7 +272,7 @@ python app.py
     "proxy": ""                              // 代理设置（可选）
   },
   
-  "note_backend": "obsidian",                // 笔记后端：obsidian|google_docs
+  "note_backend": "obsidian",  // 笔记后端：obsidian | google_docs
   
   "obsidian": {
     "vault_path": "/path/to/your/vault",     // Obsidian仓库路径
@@ -341,7 +403,7 @@ python app.py
    - 打开您下载的JSON密钥文件，找到并复制 `client_email` 字段的值
    - 打开您的目标Google Docs文档，通过"共享"功能，将此 `client_email` 添加为协作者，并授予"编辑者"权限
 
-## 新功能说明
+## 核心功能说明
 
 ### 1. 消息持久化存储
 - 所有消息都会自动保存到SQLite数据库
@@ -433,20 +495,9 @@ docker run -d --name dailybot \
 ```
 
 ### 使用 docker-compose
-创建 `docker-compose.yml`：
-```yaml
-version: '3'
-services:
-  dailybot:
-    image: dailybot
-    volumes:
-      - ./config:/app/config
-      - ./data:/app/data
-      - ./logs:/app/logs
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-    restart: unless-stopped
+```bash
+# 使用提供的docker-compose.yml
+docker-compose up -d
 ```
 
 ## 常见问题
@@ -454,8 +505,26 @@ services:
 ### Q: 如何选择登录方案？
 A: 
 - **Windows用户**：推荐使用wcf，稳定性高
-- **Mac/Linux用户**：使用JS Wechaty
-- **长期稳定运行**：建议购买PadLocal协议（JS Wechaty）
+- **Mac用户**：
+  - 推荐使用Mac微信通道的静默模式，安全稳定
+  - 如需自动回复功能，可以使用Hook模式或JS Wechaty
+- **Linux用户**：使用JS Wechaty
+- **长期稳定运行**：
+  - Mac: 使用Mac微信通道的静默模式
+  - 其他: 购买PadLocal协议（JS Wechaty）
+
+### Q: Mac微信通道的两种模式有什么区别？
+A:
+- **静默模式**：
+  - 定期读取数据库，获取聊天记录
+  - 不需要Hook，更安全
+  - 适合笔记整理等不需要即时响应的场景
+  - 不会被微信检测到第三方修改
+- **Hook模式**：
+  - 实时监听消息，支持自动回复
+  - 需要关闭SIP，可能有封号风险
+  - 适合需要即时交互的场景
+  - 仅支持微信3.6.0或更低版本
 
 ### Q: 如何避免封号？
 A:
@@ -463,7 +532,8 @@ A:
 2. 控制消息发送频率
 3. 使用小号测试
 4. 购买付费协议（如PadLocal）
-5. 详见 [防封号指南](docs/anti_ban_guide.md)
+5. Mac用户使用静默模式最安全
+6. 详见 [防封号指南](docs/anti_ban_guide.md)
 
 ### Q: 登录失败怎么办？
 A: 
@@ -514,17 +584,8 @@ A:
 - [x] 动态分类管理
 - [x] 智能去重功能
 - [x] Channel 抽象架构
-- [x] JS Wechaty支持
-- [x] WeChat-Ferry (wcf)支持
+- [x] 三种微信通道支持
 - [x] 防封号措施
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
 - [ ] 支持企业微信、飞书等更多通道
-
-## 贡献指南
-
-欢迎提交Issue和Pull Request！
-
-## 许可证
-
-MIT License 
