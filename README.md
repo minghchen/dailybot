@@ -1,17 +1,6 @@
-# DailyBot（日报机器人）
+# DailyBot（助理机器人）
 
-一个智能的聊天机器人，能够自动提取、总结和整理聊天记录中的有价值信息到笔记系统。支持多种微信登录方式，可跨平台运行。
-
-## 🚨 重要声明
-
-在使用本项目前，请务必了解：
-
-**关于微信登录安全性**：
-- 使用第三方微信登录方案存在一定的封号风险
-- 免费的web协议（wechaty-puppet-wechat4u）存在较高封号风险
-- 强烈建议使用PadLocal等付费协议，或wcf方案（Windows）
-- 请务必阅读 [防封号指南](docs/anti_ban_guide.md) 了解最佳实践
-- 建议使用小号测试，避免主号被封
+一个智能的科研小助理，能够自动提取、总结和整理聊天记录中的有价值信息到笔记系统。目前支持多种微信登录方式，可跨平台运行。
 
 ## 主要功能
 
@@ -48,6 +37,25 @@
 - 支持Google Docs云端存储
 - 可部署在云服务器上
 
+## 笔记格式示例
+
+```markdown
+**2024-03 Scaling Robot Data Without Dynamics Simulation**  
+[Real2sim2Real的破局之法](https://mp.weixin.qq.com/s/-iqRIMLcMGxEEm9dn65kNw)  
+在许多机器人操作任务中，精确的动力学建模可能并非必需，基于几何约束的轨迹生成已经足以支撑有效的策略学习。
+```
+
+## 🚨 重要声明
+
+在使用本项目前，请务必了解：
+
+**关于微信登录安全性**：
+- 使用第三方微信登录方案存在一定的封号风险
+- 免费的web协议（wechaty-puppet-wechat4u）存在较高封号风险
+- 强烈建议使用PadLocal等付费协议，或wcf方案（Windows）
+- 请务必阅读 [防封号指南](docs/anti_ban_guide.md) 了解最佳实践
+- 建议使用小号测试，避免主号被封
+
 ## 微信登录方案
 
 本项目支持三种微信登录方案：
@@ -70,13 +78,14 @@
 - **Hook模式**：实时消息监听和自动回复（需要关闭SIP）
 - 详见 [Mac微信通道使用指南](docs/mac_wechat_hook_guide.md)
 
-## 笔记格式示例
+## 架构说明
 
-```markdown
-**2024-03 Scaling Robot Data Without Dynamics Simulation**  
-[Real2sim2Real的破局之法](https://mp.weixin.qq.com/s/-iqRIMLcMGxEEm9dn65kNw)  
-在许多机器人操作任务中，精确的动力学建模可能并非必需，基于几何约束的轨迹生成已经足以支撑有效的策略学习。
-```
+### Channel 架构
+本项目采用了 Channel 抽象架构，将消息接收、处理、发送的逻辑抽象化：
+- **Channel 基类**：定义了统一的消息处理接口
+- **JSWechatyChannel**：基于 JavaScript Wechaty 实现的微信通道
+- **WcfChannel**：基于 WeChat-Ferry 实现的Windows微信通道
+- **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
 
 ## 项目结构
 
@@ -122,15 +131,6 @@ dailybot/
 ├── requirements.txt            # Python依赖
 └── README.md                   # 项目说明文档
 ```
-
-## 架构说明
-
-### Channel 架构
-本项目采用了 Channel 抽象架构，将消息接收、处理、发送的逻辑抽象化：
-- **Channel 基类**：定义了统一的消息处理接口
-- **JSWechatyChannel**：基于 JavaScript Wechaty 实现的微信通道
-- **WcfChannel**：基于 WeChat-Ferry 实现的Windows微信通道
-- **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
 
 ## 环境要求
 
