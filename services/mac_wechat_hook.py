@@ -73,21 +73,43 @@ class MacWeChatHook:
     def find_main_db_path(self, db_name: str) -> Optional[Path]:
         """
         根据用户hash和数据库名称查找主数据库文件路径。
+        此函数会处理两种目录结构，并智能选择包含数据的用户目录：
+        1. .../com.tencent.xinWeChat/<32位哈希>/
+        2. .../com.tencent.xinWeChat/<版本号>/<32位哈希>/
         例如: find_main_db_path("msg_2.db")
         """
-        # 通常，微信数据存储在与用户相关的哈希命名的文件夹中
-        user_hash_dirs = [d for d in self.db_base_path.iterdir() if d.is_dir() and len(d.name) == 32]
-        if not user_hash_dirs:
-            logger.error("未找到用户特定的数据目录。")
+        search_path = None
+        
+        def find_valid_user_dir(path: Path) -> Optional[Path]:
+            """在指定路径下查找有效的用户哈希目录"""
+            hash_dirs = [d for d in path.iterdir() if d.is_dir() and len(d.name) == 32]
+            for h_dir in hash_dirs:
+                # 检查是否存在Message或Contact文件夹，作为有效目录的标志
+                if (h_dir / "Message").exists() or (h_dir / "Contact").exists():
+                    logger.info(f"在 {path} 中找到有效的用户哈希目录: {h_dir.name}")
+                    return h_dir
             return None
 
-        # 假设只有一个用户或使用第一个找到的用户目录
-        user_data_path = user_hash_dirs[0]
+        # 首先，尝试直接在基础路径下查找 (旧版微信结构)
+        search_path = find_valid_user_dir(self.db_base_path)
+
+        # 如果直接找不到，则遍历子目录 (新版微信结构)
+        if not search_path:
+            logger.info(f"在 {self.db_base_path} 下未直接找到有效哈希目录，将搜索子目录...")
+            for subdir in self.db_base_path.iterdir():
+                if subdir.is_dir():
+                    search_path = find_valid_user_dir(subdir)
+                    if search_path:
+                        break  # 找到后即停止
+
+        if not search_path:
+            logger.error("在任何路径下都未找到有效的用户数据目录 (包含Message/Contact子文件夹的32位哈希目录)。")
+            return None
+
+        # 使用找到的有效用户数据路径
+        user_data_path = search_path
         
         # 查找匹配的数据库文件
-        # Common database paths:
-        # Message: Message/msg_x.db
-        # Contact: Contact/wccontact_new2.db
         potential_paths = [
             user_data_path / "Message" / db_name,
             user_data_path / "Contact" / db_name,
@@ -98,7 +120,8 @@ class MacWeChatHook:
                 logger.info(f"找到数据库文件: {db_path}")
                 return db_path
         
-        logger.error(f"在 {user_data_path} 中未找到数据库 {db_name}")
+        # 找不到特定db是正常情况，例如不是每个用户都有msg_4.db
+        # logger.warning(f"在 {user_data_path} 中未找到数据库 {db_name} (这可能是正常的)。")
         return None
 
     def decrypt_database(self, db_path: Path, force_decrypt: bool = False) -> Optional[Path]:
@@ -310,10 +333,10 @@ Changes:
 - Removed `get_db_key_lldb` and replaced with `_get_db_key_from_env`.
 - `__init__` now validates the key from the environment.
 - Added `_get_wechat_version`.
-- Rewrote `find_db_files` to `find_main_db_path` for more targeted search.
+- Rewritten `find_main_db_path` to handle both old and new WeChat directory structures and correctly select the user data folder.
 - Completely rewrote `decrypt_database` to be more robust, efficient (avoids re-decrypting), and safer (checks for `sqlcipher` tool, copies db before decrypting).
-- Rewrote `get_chat_messages` to accept `last_check_time`, filter in SQL, correctly parse group chat sender from message content, and return a more structured dictionary.
-- Rewrote `get_contacts` to return more structured data.
+- Rewritten `get_chat_messages` to accept `last_check_time`, filter in SQL, correctly parse group chat sender from message content, and return a more structured dictionary.
+- Rewritten `get_contacts` to return more structured data.
 - Added a `_execute_query` helper for cleaner code.
 - Updated main test block to reflect new methods.
 """
