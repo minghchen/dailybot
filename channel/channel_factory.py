@@ -38,29 +38,9 @@ class ChannelFactory:
                 return WcfChannel(config)
                 
             elif channel_type == 'mac_wechat':
-                # 基于Hook的Mac微信通道（仅macOS）
+                # 基于数据库读取和Hook的Mac微信通道（仅macOS）
                 from channel.mac_wechat_channel import MacWeChatChannel
-                channel = MacWeChatChannel()
-                
-                # 获取mac_wechat配置
-                mac_config = config.get('mac_wechat', {})
-                
-                # 设置运行模式
-                mode = mac_config.get('mode', 'silent')
-                if mode == 'hook' or mac_config.get('enable_hook', False):
-                    import os
-                    os.environ["MAC_WECHAT_USE_HOOK"] = "true"
-                
-                # 设置轮询间隔（静默模式）
-                poll_interval = mac_config.get('poll_interval', 60)
-                channel.set_poll_interval(poll_interval)
-                
-                # 自动回复规则（Hook模式）
-                auto_reply_rules = mac_config.get('auto_reply_rules', {})
-                for keyword, reply in auto_reply_rules.items():
-                    channel.add_auto_reply_rule(keyword, reply)
-                
-                return channel
+                return MacWeChatChannel(config)
                 
             # 可以在这里添加更多通道类型
             # elif channel_type == 'telegram':

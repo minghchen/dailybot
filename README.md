@@ -73,10 +73,10 @@
 - 详见 [微信登录方案说明](docs/wechat_login_methods.md#方案二wechat-ferry-wcf)
 
 ### 3. Mac微信通道（仅macOS）🆕
-- 专为macOS设计的原生方案
-- **静默读取模式**：定期读取聊天记录数据库，安全稳定
-- **Hook模式**：实时消息监听和自动回复（需要关闭SIP）
-- 详见 [Mac微信通道使用指南](docs/mac_wechat_hook_guide.md)
+- 专为macOS设计的原生方案，提供两种运行模式：
+- **静默读取模式 (默认)**：定期读取聊天记录数据库，绝对安全、稳定，但有一定消息延迟。是开箱即用的推荐模式。**此模式需要用户提前获取并设置 `WECHAT_DB_KEY` 环境变量。**
+- **Hook模式 (实验性)**：依赖用户**手动安装**的第三方工具 [`WeChatTweak-macOS`](https://github.com/sunnyyoung/WeChatTweak-macOS) ，实现实时消息的接收和发送。功能更强大，但需要额外配置且依赖第三方工具的稳定性。**本项目不会尝试自动安装Tweak，仅会检查其是否存在。**
+- 详见 [Mac微信通道使用指南](docs/mac_wechat_guide.md)
 
 ## 架构说明
 
@@ -85,6 +85,7 @@
 - **Channel 基类**：定义了统一的消息处理接口
 - **JSWechatyChannel**：基于 JavaScript Wechaty 实现的微信通道
 - **WcfChannel**：基于 WeChat-Ferry 实现的Windows微信通道
+- **MacWeChatChannel**：基于本地数据库读取或集成第三方Hook工具实现的macOS通道
 - **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
 
 ## 项目结构
@@ -106,6 +107,7 @@ dailybot/
 │   ├── llm_service.py          # LLM调用服务
 │   ├── note_manager.py         # 笔记管理服务
 │   ├── google_docs_manager.py  # Google Docs管理器
+│   ├── mac_wechat_service.py   # Mac微信服务
 │   └── rag_service.py          # RAG服务
 ├── utils/                      # 工具类
 │   ├── link_parser.py          # 链接解析器
@@ -195,8 +197,10 @@ pip install -r requirements.txt
 - **JS Wechaty**：参考 [微信登录方案说明](docs/wechat_login_methods.md#方案一javascript-wechaty)
 - **wcf**：参考 [微信登录方案说明](docs/wechat_login_methods.md#方案二wechat-ferry-wcf)
 - **Mac微信**：
-  - 静默模式（默认）：无需特殊配置，设置 `channel_type` 为 `mac_wechat` 即可
-  - Hook模式：需要关闭SIP，设置 `MAC_WECHAT_USE_HOOK=true` 环境变量
+  - 静默模式（默认）：无需特殊配置，在 `config.json` 中设置 `channel_type` 为 `mac_wechat` 即可。**必须在 `.env` 文件或环境变量中设置 `WECHAT_DB_KEY`。**
+  - Hook模式：
+    1.  用户必须**手动**访问 [WeChatTweak-macOS 官网](https://github.com/sunnyyoung/WeChatTweak-macOS) 并按照其说明进行安装。
+    2.  在 `config.json` 中设置 `channel_type` 为 `mac_wechat`，并可在 `mac_wechat` 配置块中将 `mode` 设置为 `hook`。
 
 4. 配置
 - 复制 `config/config.example.json` 为 `config/config.json`
@@ -206,14 +210,17 @@ pip install -r requirements.txt
   OPENAI_API_KEY=你的OpenAI_API密钥
   OPENAI_BASE_URL=https://api.openai.com/v1
   
+  # Mac微信通道（静默模式）配置
+  WECHAT_DB_KEY=你的64位数据库密钥
+  
   # JS Wechaty配置（如果使用PadLocal）
   WECHATY_PUPPET=wechaty-puppet-padlocal
   WECHATY_PUPPET_SERVICE_TOKEN=你的padlocal_token
   
-  # Mac微信Hook模式配置（可选）
-  MAC_WECHAT_USE_HOOK=true
+  # Mac微信Hook模式配置（可选，在config.json中配置）
+  # "mac_wechat": { "mode": "hook" }
   ```
-- 根据你选择的通道类型，在 `config.json` 中设置相应的配置
+- 在 `config.json` 中，确认 `channel_type` 设置正确。
 
 5. 运行
 ```bash
@@ -251,12 +258,11 @@ python app.py
   
   // Mac微信配置（仅macOS）
   "mac_wechat": {
-    "mode": "silent",                        // 运行模式：silent|hook
+    "mode": "silent",                        // 运行模式: silent | hook
     "poll_interval": 60,                     // 静默模式轮询间隔（秒）
-    "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
-    "group_chat_prefix": ["@bot"],           // 群聊触发前缀
+    "single_chat_prefix": ["bot", "@bot"],   // 私聊/Hook模式触发前缀
+    "group_chat_prefix": ["@bot"],           // 群聊/Hook模式触发前缀
     "group_name_white_list": [],             // 群组白名单
-    "enable_hook": false,                    // 是否启用Hook模式
     "auto_reply_rules": {                    // Hook模式自动回复规则
       "你好": "你好！有什么可以帮助你的吗？",
       "在吗": "在的，请说"
@@ -506,41 +512,40 @@ docker-compose up -d
 A: 
 - **Windows用户**：推荐使用wcf，稳定性高
 - **Mac用户**：
-  - 推荐使用Mac微信通道的静默模式，安全稳定
-  - 如需自动回复功能，可以使用Hook模式或JS Wechaty
-- **Linux用户**：使用JS Wechaty
+  - 追求**绝对安全和稳定**，且能接受消息有延迟（例如只用于信息归档），请使用默认的**静默模式**。确保已在`.env`文件中正确设置`WECHAT_DB_KEY`。
+  - 追求**实时消息和自动回复**，且不介意额外安装一个工具，请在**手动安装** `WeChatTweak-macOS` 后，启用**Hook模式**。本程序只负责与Tweak生成的日志进行通信，不会修改您的微信客户端。
+- **Linux/其他用户**：使用JS Wechaty
 - **长期稳定运行**：
-  - Mac: 使用Mac微信通道的静默模式
-  - 其他: 购买PadLocal协议（JS Wechaty）
+  - Mac: 默认的静默模式最可靠。
+  - 其他: 购买PadLocal协议（JS WeChaty）。
 
 ### Q: Mac微信通道的两种模式有什么区别？
 A:
-- **静默模式**：
-  - 定期读取数据库，获取聊天记录
-  - 不需要Hook，更安全
-  - 适合笔记整理等不需要即时响应的场景
-  - 不会被微信检测到第三方修改
-- **Hook模式**：
-  - 实时监听消息，支持自动回复
-  - 需要关闭SIP，可能有封号风险
-  - 适合需要即时交互的场景
-  - 仅支持微信3.6.0或更低版本
+- **静默模式 (默认)**:
+  - **原理**: 直接解密并读取微信本地数据库。不注入任何代码，不修改微信客户端。
+  - **优点**: 绝对安全，不会被微信检测。配置简单，只需提供数据库密钥。
+  - **缺点**: 消息有延迟（取决于轮询间隔），无法实现自动回复等实时交互。
+- **Hook模式 (实验性)**:
+  - **原理**: 依赖一个**已由用户手动安装**的第三方工具 `WeChatTweak-macOS`。本程序通过读取该工具生成的日志来接收消息，通过AppleScript来发送消息。本程序自身不执行任何"Hook"操作。
+  - **优点**: 可以实时收发消息，支持自动回复。
+  - **缺点**: 需要用户额外安装和维护 `WeChatTweak-macOS`。功能的稳定性依赖于该第三方工具。
 
 ### Q: 如何避免封号？
 A:
 1. 不要使用免费的web协议
 2. 控制消息发送频率
 3. 使用小号测试
-4. 购买付费协议（如PadLocal）
-5. Mac用户使用静默模式最安全
+4. 购买付费协议（如PadLocal）可以显著降低风险。
+5. Mac用户使用本项目提供的静默模式是当前最安全的选择。
 6. 详见 [防封号指南](docs/anti_ban_guide.md)
 
 ### Q: 登录失败怎么办？
 A: 
-1. 检查对应的服务是否启动（JS服务或微信客户端）
-2. 查看日志中的具体错误信息
-3. 确认配置文件是否正确
-4. 尝试重新登录
+- **Mac静默模式**: 检查 `WECHAT_DB_KEY` 环境变量是否已在 `.env` 文件中正确设置且密钥有效。检查系统是否已安装 `sqlcipher` (`brew install sqlcipher`)。
+- **Mac Hook模式**: 确认你已经**手动成功安装并运行了 `WeChatTweak-macOS`**。检查本程序的日志，看是否有检测到Tweak已安装的提示。
+- **其他通道**: 检查对应的服务是否启动（如JS服务或wcf客户端）。
+- 查看日志文件 (`logs/`) 中的具体错误信息。
+- 确认 `config.json` 中的配置是否正确。
 
 ### Q: 如何处理大量历史消息？
 A: 可以使用批量导入功能，或者分批次逐步添加群组到白名单。系统会自动从消息存储中获取上下文。
@@ -583,9 +588,8 @@ A:
 - [x] 消息持久化存储
 - [x] 动态分类管理
 - [x] 智能去重功能
-- [x] Channel 抽象架构
-- [x] 三种微信通道支持
-- [x] 防封号措施
+- [x] Channel 抽象架构，支持三种微信通道
+- [x] 稳定、安全的Mac微信静默读取模式
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
 - [ ] 支持企业微信、飞书等更多通道

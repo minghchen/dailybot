@@ -103,7 +103,7 @@ class DailyBot:
             logger.info("消息处理器初始化成功")
             
             # 初始化Channel
-            channel_type = self.config.get('channel_type', 'wechat')
+            channel_type = self.config['channel_type']
             self.channel = ChannelFactory.create_channel(self.config)
             if not self.channel:
                 logger.error(f"创建通道失败: {channel_type}")
@@ -169,7 +169,7 @@ class DailyBot:
         logger.info("="*50)
         logger.info("DailyBot - 微信信息整理AI助手")
         logger.info(f"笔记后端: {self.config.get('note_backend', 'obsidian')}")
-        logger.info(f"消息通道: {self.config.get('channel_type', 'wechat')}")
+        logger.info(f"消息通道: {self.config['channel_type']}")
         logger.info("="*50)
         
         # 初始化服务

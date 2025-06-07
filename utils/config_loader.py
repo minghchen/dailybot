@@ -77,12 +77,26 @@ class ConfigLoader:
     @staticmethod
     def _validate_config(config: Dict[str, Any]):
         """验证配置的必要字段"""
+        # 检查 channel_type
+        if 'channel_type' not in config:
+            raise ValueError("配置缺少必要字段: channel_type (e.g., js_wechaty, wcf, mac_wechat)")
+        
+        valid_channels = ['js_wechaty', 'wcf', 'mac_wechat']
+        if config['channel_type'] not in valid_channels:
+            raise ValueError(f"不支持的 channel_type: '{config['channel_type']}'. 支持的类型: {valid_channels}")
+
+        # 检查通用和特定后端的配置
         required_fields = {
             'openai': ['api_key'],
-            'obsidian': ['vault_path'],
-            'wechat': []
         }
         
+        # 根据笔记后端检查特定字段
+        note_backend = config.get('note_backend', 'obsidian')
+        if note_backend == 'obsidian':
+            required_fields['obsidian'] = ['vault_path']
+        elif note_backend == 'google_docs':
+            required_fields['google_docs'] = ['credentials_file', 'note_documents']
+
         for section, fields in required_fields.items():
             if section not in config:
                 raise ValueError(f"配置缺少必要部分: {section}")
@@ -120,19 +134,6 @@ class ConfigLoader:
         for key, value in openai_defaults.items():
             if key not in config['openai']:
                 config['openai'][key] = value
-        
-        # 微信默认值
-        wechat_defaults = {
-            'single_chat_prefix': ['bot', '@bot'],
-            'single_chat_reply_prefix': '[Bot] ',
-            'group_chat_prefix': ['@bot'],
-            'group_chat_reply_prefix': '',
-            'group_name_white_list': ['ALL_GROUP'],
-            'nick_name_black_list': []
-        }
-        for key, value in wechat_defaults.items():
-            if key not in config['wechat']:
-                config['wechat'][key] = value
         
         # 内容提取默认值
         if 'content_extraction' not in config:

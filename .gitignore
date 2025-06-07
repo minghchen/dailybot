@@ -33,6 +33,7 @@ env/
 *.swo
 *~
 .DS_Store
+.cursor
 
 # Config
 config/config.json
