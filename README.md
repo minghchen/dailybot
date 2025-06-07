@@ -120,11 +120,9 @@ dailybot/
 │   ├── messages.db             # 消息数据库
 │   └── vector_store/           # 向量数据库
 ├── logs/                       # 日志目录
-├── plugins/                    # 插件系统
 ├── scripts/                    # 脚本工具
 │   ├── start.sh                # 快速启动脚本
 │   ├── start_mac.sh            # Mac专用启动脚本
-│   ├── upgrade.py              # 升级脚本
 │   └── js_wechaty_server.example.js  # JS Wechaty服务示例
 ├── docs/                       # 文档目录
 ├── templates/                  # 模板文件
