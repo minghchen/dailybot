@@ -7,22 +7,6 @@ echo "======================================"
 echo "DailyBot 快速启动脚本"
 echo "======================================"
 
-# 检查.env文件
-if [ ! -f ".env" ]; then
-    echo "⚠️  未找到.env文件"
-    echo "请创建.env文件并添加："
-    echo "OPENAI_API_KEY=你的OpenAI密钥"
-    exit 1
-fi
-
-# 检查必要的环境变量
-source .env
-
-if [ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "你的OpenAI_API密钥" ]; then
-    echo "错误：请在 .env 文件中设置有效的 OPENAI_API_KEY"
-    exit 1
-fi
-
 # 检查是否有 config.json
 if [ ! -f config/config.json ]; then
     if [ -f config/config.example.json ]; then

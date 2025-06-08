@@ -182,9 +182,9 @@ class NoteManager:
         if self.note_backend == 'obsidian':
             await self._save_to_obsidian(content_data)
         elif self.note_backend == 'google_docs':
-            await self.google_docs_manager.save_content(content_data)
+            await self._save_to_google_docs(content_data)
     
-    async def _select_note_file_and_category(self, content_data: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    async def _select_note_file_and_category(self, content_data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
         """
         使用LLM智能选择笔记文件和类别
         
@@ -199,7 +199,7 @@ class NoteManager:
             if self.note_files:
                 return self.note_files[0], "其他"
             else:
-                return None, "others"
+                return None, "其他"
         
         # 构建选择提示
         title = content_data.get('title', '')
@@ -251,7 +251,32 @@ class NoteManager:
         if self.note_files:
             return self.note_files[0], "其他"
         else:
-            return None, "others"
+            return None, "其他"
+    
+    async def _save_to_google_docs(self, content_data: Dict[str, Any]):
+        """保存到Google Docs"""
+        try:
+            # 智能选择笔记文件和类别
+            selected_file, category = await self._select_note_file_and_category(content_data)
+
+            if not selected_file or 'document_id' not in selected_file:
+                if self.note_files:
+                    selected_file = self.note_files[0]
+                    logger.warning(f"智能选择失败，回退到第一个笔记文件: {selected_file.get('name')}")
+                else:
+                    logger.error("未配置任何Google Docs笔记文件。")
+                    return
+
+            document_id = selected_file.get('document_id')
+            
+            # 将LLM选择的类别更新到content_data中，以便GoogleDocsManager使用
+            content_data['category'] = category
+
+            await self.google_docs_manager.save_content(document_id, content_data)
+
+        except Exception as e:
+            logger.error(f"保存内容到Google Docs时出错: {e}", exc_info=True)
+            raise
     
     async def _save_to_obsidian(self, content_data: Dict[str, Any]):
         """保存到Obsidian"""
@@ -773,7 +798,26 @@ class NoteManager:
             搜索结果列表
         """
         if self.note_backend == 'google_docs':
-            return await self.google_docs_manager.search_content(query)
+            all_results = []
+            # 注意: Google Docs后端目前不支持按群组过滤
+            if group_filter:
+                logger.warning("Google Docs后端搜索尚不支持按群组过滤。")
+
+            for note_doc in self.note_files:
+                doc_id = note_doc.get('document_id')
+                if doc_id:
+                    try:
+                        results = await self.google_docs_manager.search_content(doc_id, query)
+                        # 为结果添加文档信息
+                        for res in results:
+                            res['document_name'] = note_doc.get('name')
+                            res['document_id'] = doc_id
+                        all_results.extend(results)
+                    except Exception as e:
+                        logger.error(f"搜索文档 {note_doc.get('name')} ({doc_id}) 时出错: {e}")
+
+            # 目前仅按找到的顺序返回，未来可以增加排序逻辑
+            return all_results[:limit]
         
         # Obsidian搜索逻辑
         results = []

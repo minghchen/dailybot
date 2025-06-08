@@ -43,14 +43,6 @@ if [ ! -f "config/config.json" ]; then
     fi
 fi
 
-# 检查.env文件
-if [ ! -f ".env" ]; then
-    echo "⚠️  未找到.env文件"
-    echo "请创建.env文件并添加："
-    echo "OPENAI_API_KEY=你的OpenAI密钥"
-    exit 1
-fi
-
 # 询问运行模式
 echo ""
 echo "请选择运行模式："
@@ -72,4 +64,4 @@ echo "🚀 正在启动DailyBot..."
 echo "提示：首次运行可能需要输入系统密码以访问微信数据库"
 echo ""
 
-python3 app.py 
+python app.py 

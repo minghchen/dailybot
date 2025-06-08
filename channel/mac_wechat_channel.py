@@ -29,7 +29,7 @@ class MacWeChatChannel(Channel):
         self.is_running = False
         self.message_callback = None
         
-        mac_config = self.config.get('mac_wechat', {})
+        mac_config = self.config
         
         # 根据配置决定运行模式
         self.mode = mac_config.get('mode', 'silent')
@@ -44,9 +44,6 @@ class MacWeChatChannel(Channel):
         self.poll_thread = None
         self.lock = Lock()
         self.state_file = Path.home() / ".dailybot/mac_channel_state.json"
-
-        # Hook模式相关
-        self.auto_reply_rules = mac_config.get('auto_reply_rules', {})
 
     def startup(self):
         """启动通道"""
@@ -69,22 +66,37 @@ class MacWeChatChannel(Channel):
                 self.poll_thread.daemon = True
                 self.poll_thread.start()
 
+            # 如果是Hook模式，启动消息监控
+            if self.use_hook_mode:
+                # 检查Tweak是否安装
+                if not self.service.is_tweak_installed():
+                    logger.warning("Hook模式已启用，但未检测到WeChatTweak-macOS。实时消息功能将不可用。")
+                    logger.warning("请访问 https://github.com/sunnyyoung/WeChatTweak-macOS 手动安装。")
+                else:
+                    logger.info("Hook模式已启用，并检测到WeChatTweak-macOS。")
+                    self.service.start_monitoring(self._handle_hook_message)
+
             logger.info("Mac WeChat Channel 启动成功。")
         except Exception as e:
             logger.error(f"Mac WeChat Channel 启动失败: {e}")
             self.is_running = False
 
-    def send(self, message: Dict, context: Dict = None):
-        """发送消息（仅在Hook模式下有效）"""
+    def send(self, reply: Any, context: Dict[str, Any]):
+        """发送消息 (仅Hook模式支持)"""
         if self.mode != 'hook' or not self.service:
             logger.warning("发送消息功能仅在Hook模式下可用。")
             return
 
         try:
-            to_user = message.get("to_user_id")
-            content = message.get("content")
-            if to_user and content:
-                self.service.send_message(to_user, content)
+            target_id = reply.get("to_user_id")
+            content = reply.get("content")
+            if target_id and content:
+                logger.info(f"[MacWeChat] 准备发送消息: To: {target_id}, Content: {content[:50]}...")
+                success = self.service.send_message(target_id, content)
+                if success:
+                    logger.info(f"[MacWeChat] 消息发送成功。")
+                else:
+                    logger.error(f"[MacWeChat] 消息发送失败。")
         except Exception as e:
             logger.error(f"发送消息时出错: {e}", exc_info=True)
 
@@ -123,7 +135,7 @@ class MacWeChatChannel(Channel):
             logger.error(f"保存状态文件失败: {e}")
 
     def _poll_messages(self):
-        """消息轮询 (仅静默模式)"""
+        """轮询新消息 (静默模式)"""
         while self.is_running:
             try:
                 with self.lock:
@@ -181,6 +193,54 @@ class MacWeChatChannel(Channel):
 
         except Exception as e:
             logger.error(f"处理消息时出错: {e}", exc_info=True)
+
+    def _handle_hook_message(self, msg: Dict[str, Any]):
+        """处理来自Hook的消息"""
+        try:
+            # 简单的文本消息处理
+            content = msg.get("content", "")
+            from_user = msg.get("sender", "")
+            room_id = msg.get("room_id", "")
+            is_group = msg.get("is_group", False)
+
+            if not content or not from_user:
+                return
+
+            context = self._create_context(content, from_user, room_id, is_group)
+            if context:
+                self.message_callback(context)
+
+        except Exception as e:
+            logger.error(f"处理Hook消息失败: {e}", exc_info=True)
+
+    def _create_context(self, content: str, from_user: str, room_id: Optional[str] = None, is_group: bool = False) -> Optional[Dict]:
+        """创建消息上下文，并检查是否需要触发机器人"""
+        
+        context = {
+            "channel": "mac_wechat",
+            "mode": self.mode,
+            "msg": {
+                "msg_id": f"mac_{self.mode}_{int(time.time() * 1000)}",
+                "create_time": int(datetime.now().timestamp()),
+                "from_user_id": from_user,
+                "room_id": room_id,
+                "content": content,
+                "is_group": is_group,
+                "type": "text",
+                "is_historical": False,
+                "raw": {
+                    "msg_id": f"mac_{self.mode}_{int(time.time() * 1000)}",
+                    "create_time": int(datetime.now().timestamp()),
+                    "sender_id": from_user,
+                    "room_id": room_id,
+                    "content": content,
+                    "is_group": is_group
+                }
+            },
+            "session_id": room_id or from_user
+        }
+
+        return context
 
     def shutdown(self):
         """停止通道"""

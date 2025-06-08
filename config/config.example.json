@@ -1,60 +1,32 @@
 {
-  "channel_type": "js_wechaty",
+  "channel_type": "mac_wechat",
   
   "js_wechaty": {
     "ws_url": "ws://localhost:8788",
-    "token": "",
-    "reconnect_interval": 5,
     "single_chat_prefix": ["bot", "@bot"],
-    "single_chat_reply_prefix": "[bot] ",
     "group_chat_prefix": ["@bot"],
-    "group_name_white_list": ["ChatGPT测试群", "ChatGPT测试群2"],
-    "speech_recognition": false,
-    "group_speech_recognition": false,
-    "voice_reply_voice": false,
+    "group_name_white_list": [],
     "message_limit_per_minute": 20,
     "min_reply_delay": 2,
-    "max_reply_delay": 5,
-    "working_hours": {
-      "enabled": false,
-      "start": 9,
-      "end": 22
-    },
-    "_comment": "防封号配置说明",
-    "_puppet_env": "设置环境变量 WECHATY_PUPPET=wechaty-puppet-padlocal 使用pad协议",
-    "_token_env": "设置环境变量 WECHATY_PUPPET_SERVICE_TOKEN=your_token"
+    "max_reply_delay": 5
   },
   
   "wcf": {
     "single_chat_prefix": ["bot", "@bot"],
-    "single_chat_reply_prefix": "[bot] ",
     "group_chat_prefix": ["@bot"],
-    "group_name_white_list": ["ChatGPT测试群", "ChatGPT测试群2"],
-    "group_at_sender": true,
-    "speech_recognition": false,
-    "group_speech_recognition": false,
-    "voice_reply_voice": false,
-    "_comment": "wcf仅支持Windows系统，需要特定版本微信客户端"
+    "group_name_white_list": [],
+    "group_at_sender": true
   },
   
   "mac_wechat": {
     "mode": "silent",
     "poll_interval": 60,
     "single_chat_prefix": ["bot", "@bot"],
-    "single_chat_reply_prefix": "[bot] ",
     "group_chat_prefix": ["@bot"],
-    "group_name_white_list": ["ChatGPT测试群", "ChatGPT测试群2"],
-    "enable_hook": false,
-    "auto_reply_rules": {
-      "你好": "你好！有什么可以帮助你的吗？",
-      "在吗": "在的，请说"
-    },
-    "_comment": "Mac微信通道：silent模式安全稳定，hook模式需要关闭SIP并使用旧版微信"
+    "group_name_white_list": []
   },
   
   "openai": {
-    "api_key": "YOUR_OPENAI_API_KEY",
-    "api_base": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "temperature": 0.7,
     "max_tokens": 2000,
@@ -65,7 +37,7 @@
   "note_backend": "obsidian",
   
   "obsidian": {
-    "vault_path": "/path/to/your/obsidian/vault",
+    "vault_path": "/path/to/your/vault",
     "daily_notes_folder": "Daily Notes",
     "knowledge_base_folder": "Knowledge Base",
     "template_path": "Templates/Daily Note Template.md",
@@ -79,11 +51,6 @@
         "name": "机器人技术",
         "filename": "机器人技术.md", 
         "description": "机器人、具身智能、操作和控制相关内容"
-      },
-      {
-        "name": "产业动态",
-        "filename": "产业动态.md",
-        "description": "AI产业新闻、公司动态、市场分析"
       }
     ]
   },
@@ -92,14 +59,9 @@
     "credentials_file": "config/google_credentials.json",
     "note_documents": [
       {
-        "name": "AI研究笔记",
-        "document_id": "YOUR_AI_RESEARCH_DOC_ID",
+        "name": "DaliyAI笔记本",
+        "document_id": "1B6_K3CB0nH1obz2dfltVvwVVFOklKlUPhHHG0aNwLxw",
         "description": "人工智能相关的论文、技术和理论研究"
-      },
-      {
-        "name": "应用案例", 
-        "document_id": "YOUR_APPLICATION_DOC_ID",
-        "description": "AI应用案例、项目实践、工具使用"
       }
     ]
   },

@@ -29,7 +29,6 @@ class GoogleDocsManager:
             config: Google Docs配置信息
         """
         self.config = config
-        self.document_id = config.get('document_id')
         self.credentials_file = config.get('credentials_file')
         self.service = None
         
@@ -45,7 +44,7 @@ class GoogleDocsManager:
         # 初始化服务
         self._init_service()
         
-        logger.info(f"Google Docs管理器初始化成功，文档ID: {self.document_id}")
+        logger.info(f"Google Docs管理器初始化成功")
     
     def _init_service(self):
         """初始化Google Docs API服务"""
@@ -62,7 +61,7 @@ class GoogleDocsManager:
             logger.error(f"初始化Google Docs服务失败: {e}")
             raise
     
-    async def get_document_content(self) -> Dict[str, Any]:
+    async def get_document_content(self, document_id: str) -> Dict[str, Any]:
         """
         获取文档内容
         
@@ -70,17 +69,18 @@ class GoogleDocsManager:
             文档内容
         """
         try:
-            document = self.service.documents().get(documentId=self.document_id).execute()
+            document = self.service.documents().get(documentId=document_id).execute()
             return document
         except HttpError as error:
-            logger.error(f'获取文档失败: {error}')
+            logger.error(f'获取文档 {document_id} 失败: {error}')
             return None
     
-    async def save_content(self, content_data: Dict[str, Any]):
+    async def save_content(self, document_id: str, content_data: Dict[str, Any]):
         """
         保存内容到Google Docs，智能插入到合适位置
         
         Args:
+            document_id: 要保存到的文档ID
             content_data: 内容数据
         """
         try:
@@ -88,9 +88,9 @@ class GoogleDocsManager:
             formatted_content = self._format_content(content_data)
             
             # 获取文档结构
-            document = await self.get_document_content()
+            document = await self.get_document_content(document_id)
             if not document:
-                logger.error("无法获取文档内容")
+                logger.error(f"无法获取文档内容: {document_id}")
                 return
             
             # 分析文档结构，找到合适的插入位置
@@ -102,7 +102,7 @@ class GoogleDocsManager:
             
             # 检查是否有重复内容
             if await self._check_duplicate(document, content_data):
-                logger.info(f"内容已存在，跳过: {content_data.get('title')}")
+                logger.info(f"内容已存在于文档 {document_id}，跳过: {content_data.get('title')}")
                 return
             
             # 构建请求
@@ -137,14 +137,14 @@ class GoogleDocsManager:
             
             # 执行批量更新
             result = self.service.documents().batchUpdate(
-                documentId=self.document_id,
+                documentId=document_id,
                 body={'requests': requests}
             ).execute()
             
-            logger.info(f"内容已保存到Google Docs: {content_data.get('title')}")
+            logger.info(f"内容已保存到Google Docs ({document_id}): {content_data.get('title')}")
             
         except Exception as e:
-            logger.error(f"保存内容到Google Docs失败: {e}", exc_info=True)
+            logger.error(f"保存内容到Google Docs ({document_id})失败: {e}", exc_info=True)
     
     def _format_content(self, content_data: Dict[str, Any]) -> str:
         """
@@ -401,18 +401,19 @@ class GoogleDocsManager:
         
         return requests
     
-    async def search_content(self, query: str) -> List[Dict[str, Any]]:
+    async def search_content(self, document_id: str, query: str) -> List[Dict[str, Any]]:
         """
         搜索文档内容
         
         Args:
+            document_id: 要搜索的文档ID
             query: 搜索查询
             
         Returns:
             搜索结果
         """
         try:
-            document = await self.get_document_content()
+            document = await self.get_document_content(document_id)
             if not document:
                 return []
             
@@ -432,5 +433,5 @@ class GoogleDocsManager:
             return results[:10]  # 限制返回结果数量
             
         except Exception as e:
-            logger.error(f"搜索文档失败: {e}")
+            logger.error(f"搜索文档 {document_id} 失败: {e}")
             return [] 

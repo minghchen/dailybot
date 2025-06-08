@@ -10,6 +10,7 @@ import sys
 import json
 import signal
 import asyncio
+import logging
 from loguru import logger
 from pathlib import Path
 
@@ -23,6 +24,26 @@ from services.llm_service import LLMService
 from services.note_manager import NoteManager
 from services.rag_service import RAGService
 from utils.config_loader import ConfigLoader
+
+
+class InterceptHandler(logging.Handler):
+    """
+    将标准 logging 日志重定向到 Loguru。
+    """
+    def emit(self, record):
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 class DailyBot:
@@ -55,9 +76,17 @@ class DailyBot:
             if note_backend == 'google_docs':
                 # 检查Google Docs配置
                 google_config = self.config.get('google_docs', {})
-                if not google_config.get('document_id') or google_config.get('document_id') == 'YOUR_GOOGLE_DOC_ID':
-                    logger.error("请在配置文件中设置有效的 Google Docs document_id")
+                note_docs = google_config.get('note_documents', [])
+                if not note_docs:
+                    logger.error("使用Google Docs后端时，请在config.json的'google_docs'中配置'note_documents'")
                     sys.exit(1)
+                
+                # 检查每个文档是否都有ID
+                for doc in note_docs:
+                    if not doc.get('document_id') or doc.get('document_id') == 'YOUR_DOC_ID':
+                        logger.error(f"Google Docs中的笔记 '{doc.get('name', '未命名')}' 未配置有效的 document_id")
+                        sys.exit(1)
+                
                 if not google_config.get('credentials_file') or not os.path.exists(google_config.get('credentials_file', '')):
                     logger.error("请配置有效的 Google 服务账号凭证文件")
                     sys.exit(1)
@@ -166,6 +195,10 @@ class DailyBot:
             level=self.config['system']['log_level']
         )
         
+        # 拦截标准logging，统一由loguru处理
+        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+        logger.info("标准日志已重定向到Loguru")
+
         logger.info("="*50)
         logger.info("DailyBot - 微信信息整理AI助手")
         logger.info(f"笔记后端: {self.config.get('note_backend', 'obsidian')}")
