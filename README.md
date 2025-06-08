@@ -233,7 +233,7 @@ python app.py
 
 ```json
 {
-  "channel_type": "js_wechaty",  // 选择通道类型：js_wechaty | wcf | mac_wechat
+  "channel_type": "mac_wechat",  // 选择通道类型：js_wechaty | wcf | mac_wechat
   
   // JS Wechaty配置（跨平台）
   "js_wechaty": {
@@ -260,11 +260,7 @@ python app.py
     "poll_interval": 60,                     // 静默模式轮询间隔（秒）
     "single_chat_prefix": ["bot", "@bot"],   // 私聊/Hook模式触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊/Hook模式触发前缀
-    "group_name_white_list": [],             // 群组白名单
-    "auto_reply_rules": {                    // Hook模式自动回复规则
-      "你好": "你好！有什么可以帮助你的吗？",
-      "在吗": "在的，请说"
-    }
+    "group_name_white_list": []             // 群组白名单
   },
   
   "openai": {
@@ -301,8 +297,8 @@ python app.py
     "credentials_file": "config/google_credentials.json",
     "note_documents": [                      // Google Docs文档配置
       {
-        "name": "AI研究笔记",
-        "document_id": "YOUR_DOC_ID",
+        "name": "DaliyAI笔记本",
+        "document_id": "1B6_K3CB0nH1obz2dfltVvwVVFOklKlUPhHHG0aNwLxw",
         "description": "人工智能相关的论文、技术和理论研究"
       }
     ]

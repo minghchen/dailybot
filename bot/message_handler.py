@@ -32,7 +32,8 @@ class MessageHandler:
             rag_service: RAG服务实例
         """
         self.config = config
-        self.wechat_config = config['wechat']
+        channel_type = config.get('channel_type', 'js_wechaty')
+        self.channel_config = config.get(channel_type, {})
         self.extraction_config = config['content_extraction']
         self.llm_service = llm_service
         self.note_manager = note_manager
@@ -131,9 +132,9 @@ class MessageHandler:
             if reply_text:
                 # 添加回复前缀
                 if context.is_group:
-                    prefix = self.wechat_config.get('group_chat_reply_prefix', '')
+                    prefix = self.channel_config.get('group_chat_reply_prefix', '')
                 else:
-                    prefix = self.wechat_config.get('single_chat_reply_prefix', '')
+                    prefix = self.channel_config.get('single_chat_reply_prefix', '')
                 
                 reply_text = f"{prefix}{reply_text}"
                 

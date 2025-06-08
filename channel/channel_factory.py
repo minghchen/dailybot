@@ -4,10 +4,23 @@
 Channel Factory - 创建不同类型的消息通道
 """
 
+import sys
 from typing import Dict, Any, Union
 from loguru import logger
 
-from channel.channel import Channel
+from .channel import Channel
+from .js_wechaty_channel import JSWechatyChannel
+
+# Conditionally import platform-specific channels
+if sys.platform == 'darwin':
+    from .mac_wechat_channel import MacWeChatChannel
+else:
+    MacWeChatChannel = None
+
+if sys.platform == 'win32':
+    from .wcf_channel import WcfChannel
+else:
+    WcfChannel = None
 
 
 class ChannelFactory:
@@ -27,20 +40,23 @@ class ChannelFactory:
         channel_type = config.get('channel_type', 'js_wechaty')
         
         try:
+            channel_config = config.get(channel_type, {})
+            
             if channel_type == 'js_wechaty':
                 # 基于JavaScript wechaty的微信通道
-                from channel.js_wechaty_channel import JSWechatyChannel
-                return JSWechatyChannel(config)
+                return JSWechatyChannel(channel_config)
                 
             elif channel_type == 'wcf':
                 # 基于WeChat-Ferry的微信通道（仅Windows）
-                from channel.wcf_channel import WcfChannel
-                return WcfChannel(config)
+                if WcfChannel is None:
+                    raise ValueError(f"通道类型 'wcf' 仅在Windows上受支持，当前系统为 {sys.platform}。")
+                return WcfChannel(channel_config)
                 
             elif channel_type == 'mac_wechat':
                 # 基于数据库读取和Hook的Mac微信通道（仅macOS）
-                from channel.mac_wechat_channel import MacWeChatChannel
-                return MacWeChatChannel(config)
+                if MacWeChatChannel is None:
+                    raise ValueError(f"通道类型 'mac_wechat' 仅在macOS上受支持，当前系统为 {sys.platform}。")
+                return MacWeChatChannel(channel_config)
                 
             # 可以在这里添加更多通道类型
             # elif channel_type == 'telegram':

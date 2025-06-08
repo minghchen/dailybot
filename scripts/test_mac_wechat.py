@@ -97,12 +97,7 @@ def test_hook_mode():
     config = {
         "channel_type": "mac_wechat",
         "mac_wechat": {
-            "mode": "hook",
-            "auto_reply_rules": {
-                "你好": "你好！有什么可以帮助你的吗？",
-                "在吗": "在的，请说",
-                "help": "可用命令：天气、时间、帮助"
-            }
+            "mode": "hook"
         }
     }
     
