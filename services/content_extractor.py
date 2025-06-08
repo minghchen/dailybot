@@ -30,7 +30,7 @@ class ContentExtractor:
             llm_service: LLM服务实例
         """
         self.config = config
-        self.extraction_config = config['content_extraction']
+        self.extraction_config = self.config.get('content_extraction', {})
         self.llm_service = llm_service
         
         # 链接解析器
@@ -48,6 +48,10 @@ class ContentExtractor:
         }
         
         logger.info("内容提取器初始化成功")
+    
+    def set_message_handler(self, handler: Any):
+        """注入消息处理器实例，以备回调使用"""
+        self.message_handler = handler
     
     async def extract(self, msg: Dict[str, Any], context_messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """

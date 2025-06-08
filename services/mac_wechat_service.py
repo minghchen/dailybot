@@ -5,7 +5,7 @@ Mac微信服务主接口，整合数据库的解密和读取功能，为上层�
 
 import os
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 from datetime import datetime, timedelta
 import subprocess
@@ -13,22 +13,28 @@ import time
 from threading import Thread, Lock
 import json
 import re
+import hashlib
 
-from .mac_wechat_hook import MacWeChatHook
+from services.mac_wechat_hook import MacWeChatHook, DBManager
 
 logger = logging.getLogger(__name__)
 
 
 class MacWeChatService:
-    """
-    Mac微信服务主类。
-    负责协调底层hook，管理数据库解密，并向上层提供稳定的接口。
-    """
+    """Mac微信服务，封装数据库解密、读取和Hook操作"""
 
-    def __init__(self):
-        self.hook: Optional[MacWeChatHook] = None
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.hook = MacWeChatHook()
+        self.mode = 'silent'
+        self.msg_db_managers: List[DBManager] = []
+        self.contact_db_manager: DBManager = None
         # 为不同类型的数据库缓存解密后的路径
         self._decrypted_db_paths: Dict[str, Path] = {}
+        # 缓存从数据库中解析出的完整联系人列表
+        self._contacts_cache: List[Dict[str, Any]] = []
+        # 缓存群聊ID到聊天表名的映射
+        self._group_id_to_table_map: Dict[str, str] = {}
         # Hook模式相关
         self.is_hook_mode = False
         self.tweak_message_log_path: Optional[Path] = None
@@ -39,27 +45,64 @@ class MacWeChatService:
         self.lock = Lock()
 
     def initialize(self, use_hook_mode: bool = False) -> bool:
-        """
-        初始化服务。
-        根据模式选择初始化静默模式或Hook模式。
-        """
-        self.is_hook_mode = use_hook_mode
-        if self.is_hook_mode:
-            return self._initialize_hook_mode()
-        else:
+        """根据模式初始化服务"""
+        self.mode = 'hook' if use_hook_mode else 'silent'
+        if self.mode == 'silent':
             return self._initialize_silent_mode()
+        return self._initialize_hook_mode()
 
     def _initialize_silent_mode(self) -> bool:
-        """初始化静默模式"""
         logger.info("正在初始化Mac微信服务 (Silent Mode)...")
         try:
-            self.hook = MacWeChatHook()
-            self._prepare_databases()
-            logger.info("Mac微信服务 (Silent Mode) 初始化成功。")
+            user_path = self.hook.find_user_data_path()
+            if not user_path: return False
+
+            # 动态扫描并解密所有消息数据库
+            message_dir = user_path / "Message"
+            msg_db_files = sorted(message_dir.glob("msg_*.db"))
+            logger.info(f"在 {message_dir} 中发现 {len(msg_db_files)} 个消息数据库文件，开始解密...")
+
+            for db_path in msg_db_files:
+                decrypted_path = self.hook.decrypt_database(db_path)
+                if decrypted_path:
+                    self.msg_db_managers.append(DBManager(decrypted_path))
+            
+            all_contacts = []
+            # 解密并解析个人联系人
+            contact_db_path = user_path / "Contact" / "wccontact_new2.db"
+            if contact_db_path.exists():
+                decrypted_path = self.hook.decrypt_database(contact_db_path)
+                if decrypted_path:
+                    personal_contacts = self.hook.get_contacts(decrypted_path)
+                    all_contacts.extend(personal_contacts)
+                    logger.info(f"成功解析了 {len(personal_contacts)} 个个人联系人。")
+                    self.contact_db_manager = DBManager(decrypted_path)
+            
+            # 解密并解析群聊
+            group_db_path = user_path / "Group" / "group_new.db"
+            if group_db_path.exists():
+                decrypted_path = self.hook.decrypt_database(group_db_path)
+                if decrypted_path:
+                    group_contacts = self.hook.get_groups(decrypted_path)
+                    all_contacts.extend(group_contacts)
+                    logger.info(f"成功解析了 {len(group_contacts)} 个群聊。")
+
+            self._contacts_cache = all_contacts
+            
+            if not self.msg_db_managers:
+                 logger.error("未能成功解密任何消息数据库。")
+                 return False
+
+            if not self._contacts_cache:
+                 logger.warning("未能从任何联系人或群组数据库中解析出数据。")
+            else:
+                # 构建群聊ID到聊天表的映射
+                self._build_group_to_table_map()
+
+            logger.info(f"成功加载 {len(self.msg_db_managers)} 个消息库和 {len(self._contacts_cache)} 个联系人/群组。")
             return True
-        except (ValueError, FileNotFoundError) as e:
-            logger.error(f"Mac微信服务 (Silent Mode) 初始化失败: {e}")
-            self.hook = None
+        except Exception as e:
+            logger.error(f"静默模式初始化失败: {e}", exc_info=True)
             return False
 
     def _initialize_hook_mode(self) -> bool:
@@ -119,48 +162,171 @@ class MacWeChatService:
         else:
              logger.info(f"成功准备 {len(self._decrypted_db_paths)} 个数据库。")
 
-    def get_new_messages_since(self, last_check_timestamp: int, limit_per_db: int = 100) -> List[Dict]:
-        """
-        从所有已知的消息数据库中，获取某个时间点之后的新消息。
-        """
-        if not self.hook:
-            logger.error("服务未初始化。")
+    def get_new_messages_since(self, last_check_time: int) -> List[Dict[str, Any]]:
+        """从所有聊天记录中获取指定时间之后的新消息"""
+        if not self.msg_db_managers:
+            logger.error("消息数据库未初始化，无法获取新消息。")
             return []
 
         all_new_messages = []
-        msg_db_names = [name for name in self._decrypted_db_paths if name.startswith("msg_")]
-
-        for db_name in msg_db_names:
-            decrypted_path = self._decrypted_db_paths[db_name]
-            messages = self.hook.get_chat_messages(
-                decrypted_db_path=decrypted_path,
-                last_check_time=last_check_timestamp,
-                limit=limit_per_db
-            )
-            all_new_messages.extend(messages)
-        
-        # 按创建时间排序所有消息
-        all_new_messages.sort(key=lambda x: x['create_time'])
-        
-        if all_new_messages:
-            logger.info(f"从 {len(msg_db_names)} 个数据库中获取了 {len(all_new_messages)} 条新消息。")
+        for db_manager in self.msg_db_managers:
+            # 1. 找出该库中所有的聊天表，并排除删除表
+            chat_tables = db_manager.execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Chat_%' AND name NOT LIKE '%_dels'")
             
+            for table_tuple in chat_tables:
+                table_name = table_tuple[0]
+                
+                # 2. 从每个表中查询新消息
+                rows = db_manager.execute_query(
+                    f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
+                    (last_check_time,)
+                )
+                if not rows: continue
+
+                # 3. 格式化消息
+                chatroom_id = table_name.replace("Chat_", "") + "@chatroom"
+                for row in rows:
+                    sender, content = None, row[2]
+                    if row[3] == 0 and content and ":\n" in content:
+                        parts = content.split(":\n", 1)
+                        if len(parts) == 2 and parts[0].startswith("wxid_"):
+                            sender, content = parts
+                    
+                    sender_name = self.get_contact_nickname(sender) if sender else ""
+                    
+                    all_new_messages.append({
+                        "msg_id": row[0], "create_time": row[1], "content": content,
+                        "sender_id": sender, "from_user_name": sender_name, 
+                        "room_id": chatroom_id, "is_group": True,
+                        "raw": {"MsgSource": row[4]}
+                    })
+        
+        # 按时间排序所有找到的消息
+        all_new_messages.sort(key=lambda x: x['create_time'])
         return all_new_messages
 
-    def get_contacts(self) -> List[Dict]:
-        """获取所有联系人列表（好友和群聊）。"""
-        if not self.hook:
-            logger.error("服务未初始化。")
-            return []
-            
-        contact_db_name = "wccontact_new2.db"
-        if contact_db_name not in self._decrypted_db_paths:
-            logger.error("联系人数据库未准备好。")
-            return []
-            
-        decrypted_path = self._decrypted_db_paths[contact_db_name]
-        return self.hook.get_contacts(decrypted_path)
+    def get_contacts(self) -> List[Dict[str, Any]]:
+        """获取所有联系人（包括用户和群组）"""
+        if not self._contacts_cache:
+            logger.warning("联系人缓存为空，可能初始化未完成或失败。")
+        return self._contacts_cache
 
+    def get_contact_nickname(self, user_id: str) -> str:
+        """根据用户ID获取联系人昵称"""
+        if not user_id: return "未知"
+        for contact in self._contacts_cache:
+            if contact['user_id'] == user_id:
+                return contact['nickname']
+        return user_id
+
+    def get_chatroom_name_by_id(self, chatroom_id: str) -> Optional[str]:
+        """根据群聊ID获取群聊名称"""
+        if not chatroom_id: return None
+        for contact in self._contacts_cache:
+            if contact['user_id'] == chatroom_id and contact['type'] == 'group':
+                return contact['nickname']
+        return None
+
+    def get_messages_by_chatroom(self, chatroom_name: str, start_timestamp: int = 0) -> List[Dict[str, Any]]:
+        if not self.msg_db_managers:
+            logger.error("数据库未初始化。")
+            return []
+        
+        chatroom_id = None
+        for contact in self._contacts_cache:
+            if contact['nickname'] == chatroom_name and contact['type'] == 'group':
+                chatroom_id = contact['user_id']
+                break
+        
+        if not chatroom_id:
+             logger.warning(f"在缓存中未找到名为 '{chatroom_name}' 的群聊。")
+             return []
+
+        all_messages = []
+        table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
+        
+        for db_manager in self.msg_db_managers:
+             # 直接查询已知的表
+            rows = db_manager.execute_query(
+                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
+                (start_timestamp,)
+            )
+            if not rows: continue
+
+            for row in rows:
+                sender = None
+                content = row[2]
+                if row[3] == 0 and content and ":\n" in content:
+                    parts = content.split(":\n", 1)
+                    if len(parts) == 2 and parts[0].startswith("wxid_"):
+                        sender, content = parts
+                
+                sender_name = self.get_contact_nickname(sender) if sender else chatroom_name
+                
+                all_messages.append({
+                    "msg_id": row[0], "create_time": row[1], "content": content,
+                    "sender_id": sender, "from_user_name": sender_name, 
+                    "room_id": chatroom_id, "is_group": True,
+                    "raw": {"MsgSource": row[4]}
+                })
+
+        all_messages.sort(key=lambda x: x['create_time'])
+        logger.info(f"为群组 '{chatroom_name}' 获取到 {len(all_messages)} 条历史消息。")
+        return all_messages
+    
+    def get_messages_by_chatroom_id(self, chatroom_id: str, start_timestamp: int = 0) -> List[Dict[str, Any]]:
+        if not self.msg_db_managers:
+            logger.error("消息数据库未初始化。")
+            return []
+        
+        all_messages = []
+        table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
+        
+        for db_manager in self.msg_db_managers:
+            rows = db_manager.execute_query(
+                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
+                (start_timestamp,)
+            )
+            if not rows: continue
+
+            for row in rows:
+                sender, content = None, row[2]
+                if row[3] == 0 and content and ":\n" in content:
+                    parts = content.split(":\n", 1)
+                    if len(parts) == 2 and parts[0].startswith("wxid_"):
+                        sender, content = parts
+                
+                sender_name = self.get_contact_nickname(sender) if sender else ""
+                
+                all_messages.append({
+                    "msg_id": row[0], "create_time": row[1], "content": content,
+                    "sender_id": sender, "from_user_name": sender_name, 
+                    "room_id": chatroom_id, "is_group": True,
+                    "raw": {"MsgSource": row[4]}
+                })
+
+        all_messages.sort(key=lambda x: x['create_time'])
+        return all_messages
+    
+    def get_new_message_count_by_chatroom_id(self, chatroom_id: str, start_timestamp: int = 0) -> int:
+        if not self.msg_db_managers:
+            return 0
+            
+        total_count = 0
+        table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
+        
+        for db_manager in self.msg_db_managers:
+            rows = db_manager.execute_query(
+                f"SELECT COUNT(*) FROM {table_name} WHERE msgCreateTime > ?",
+                (start_timestamp,)
+            )
+            if rows and rows[0]:
+                total_count += rows[0][0]
+                if total_count > 0:
+                    break
+        
+        return total_count
+    
     # --- Hook模式相关功能 ---
 
     def send_message(self, to_user: str, content: str) -> bool:
@@ -277,6 +443,64 @@ class MacWeChatService:
                     handler(message)
                 except Exception as e:
                     logger.error(f"消息处理器出错: {e}", exc_info=True)
+
+    def debug_dump_all_groups(self):
+        """Dumps all group chats based on the presence of a member list."""
+        if not self.contact_db_manager:
+            logger.error("Contact DB manager not available for dumping groups.")
+            return
+        
+        logger.info("--- START DEBUG: DUMPING ACTUAL GROUPS (non-empty member list) ---")
+        try:
+            # A non-empty chatroom member list is the most reliable indicator of a group.
+            rows = self.contact_db_manager.execute_query(
+                "SELECT m_nsUsrName, nickname FROM WCContact WHERE m_nsChatRoomMemList IS NOT NULL AND m_nsChatRoomMemList != ''"
+            )
+            if not rows:
+                logger.warning("No groups found in the contact database (based on non-empty m_nsChatRoomMemList).")
+            else:
+                logger.info(f"Found {len(rows)} actual groups:")
+                for row in rows:
+                    group_id, group_name = row
+                    logger.info(f"  - ID: {group_id}, Name: '{group_name}'")
+        except Exception as e:
+            logger.error(f"Error while dumping groups: {e}", exc_info=True)
+        logger.info("--- END DEBUG: DUMPING ACTUAL GROUPS ---")
+
+    def _build_group_to_table_map(self):
+        """
+        通过扫描消息内容，建立群聊ID到聊天表名的映射。
+        """
+        group_ids = {c['user_id'] for c in self._contacts_cache if c.get('type') == 'group'}
+        if not group_ids:
+            logger.warning("缓存中没有群聊，无需建立映射。")
+            return
+
+        logger.info(f"开始为 {len(group_ids)} 个群聊构建ID->表名映射...")
+        
+        for db_manager in self.msg_db_managers:
+            # 修正：排除掉记录已删除消息的 _dels 表
+            chat_tables = db_manager.execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Chat_%' AND name NOT LIKE '%_dels'")
+            for table_tuple in chat_tables:
+                table_name = table_tuple[0]
+                if len(self._group_id_to_table_map) == len(group_ids): break
+                
+                try:
+                    rows = db_manager.execute_query(f'SELECT msgContent FROM "{table_name}" WHERE msgContent LIKE "%@chatroom%" LIMIT 10')
+                    for row in rows:
+                        content = row[0]
+                        match = re.search(r'([a-zA-Z0-9_-]+@chatroom)', content)
+                        if match:
+                            group_id = match.group(1)
+                            if group_id in group_ids and group_id not in self._group_id_to_table_map:
+                                logger.info(f"配对成功: {group_id} -> {table_name}")
+                                self._group_id_to_table_map[group_id] = table_name
+                                break
+                except Exception:
+                    continue
+            if len(self._group_id_to_table_map) == len(group_ids): break
+        
+        logger.info(f"映射构建完成，成功匹配 {len(self._group_id_to_table_map)} 个群聊。")
 
 
 # 使用示例

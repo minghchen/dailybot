@@ -98,31 +98,38 @@ class DailyBot:
     def init_services(self):
         """初始化各个服务"""
         try:
-            # 初始化LLM服务
+            # 检查并初始化LLM服务
+            if 'openai' not in self.config:
+                logger.error("配置文件中缺少 'openai' 配置项。")
+                sys.exit(1)
             self.llm_service = LLMService(self.config['openai'])
             logger.info("LLM服务初始化成功")
             
             # 初始化笔记管理器
             self.note_manager = NoteManager(self.config)
-            # 注入LLM服务到笔记管理器（用于智能分类）
             self.note_manager.set_llm_service(self.llm_service)
             logger.info("笔记管理器初始化成功")
             
-            # 初始化RAG服务（根据笔记后端决定是否启用）
-            if self.config['rag']['enabled']:
-                # Google Docs暂不支持RAG
+            # 检查并初始化RAG服务
+            if self.config.get('rag', {}).get('enabled'):
+                if 'rag' not in self.config:
+                    logger.error("配置文件中缺少 'rag' 配置项。")
+                    sys.exit(1)
                 if self.config.get('note_backend') == 'google_docs':
-                    logger.warning("Google Docs后端暂不支持RAG功能")
+                    logger.warning("Google Docs后端暂不支持RAG功能。")
                     self.rag_service = None
                 else:
                     self.rag_service = RAGService(
-                        self.config['rag'],
-                        self.llm_service,
-                        self.note_manager
+                        self.config['rag'], self.llm_service, self.note_manager
                     )
                     logger.info("RAG服务初始化成功")
-            
-            # 初始化消息处理器
+            else:
+                self.rag_service = None
+
+            # 检查并初始化消息处理器
+            if 'content_extraction' not in self.config:
+                logger.error("配置文件中缺少 'content_extraction' 配置项。")
+                sys.exit(1)
             self.message_handler = MessageHandler(
                 config=self.config,
                 llm_service=self.llm_service,
@@ -131,7 +138,10 @@ class DailyBot:
             )
             logger.info("消息处理器初始化成功")
             
-            # 初始化Channel
+            # 检查并初始化Channel
+            if 'channel_type' not in self.config:
+                logger.error("配置文件中缺少 'channel_type' 配置项。")
+                sys.exit(1)
             channel_type = self.config['channel_type']
             self.channel = ChannelFactory.create_channel(self.config)
             if not self.channel:
@@ -143,7 +153,7 @@ class DailyBot:
             logger.info("消息通道初始化成功")
             
         except Exception as e:
-            logger.error(f"服务初始化失败: {e}")
+            logger.error(f"服务初始化失败: {e}", exc_info=True)
             sys.exit(1)
     
     def _register_handlers(self):
@@ -208,6 +218,9 @@ class DailyBot:
         # 初始化服务
         self.init_services()
         
+        # 注入channel到message_handler
+        self.message_handler.set_channel(self.channel)
+        
         # 启动通道
         logger.info("正在启动消息通道...")
         self.running = True
@@ -215,6 +228,9 @@ class DailyBot:
         try:
             # 启动channel
             self.channel.startup()
+            
+            # 启动后处理已在白名单的群组的历史消息
+            await self.message_handler.check_and_process_history_on_startup()
             
             # 保持运行
             while self.running:

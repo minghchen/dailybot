@@ -10,291 +10,193 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from loguru import logger
-
-from services.content_extractor import ContentExtractor
-
+from pathlib import Path
+import json
 
 class HistoryProcessor:
     """历史消息处理器"""
-    
-    def __init__(self, message_handler, config: Dict[str, Any]):
+
+    def __init__(self, channel: Any, config: Dict[str, Any]):
         """
         初始化历史消息处理器
         
         Args:
-            message_handler: 消息处理器实例
+            channel: 消息通道实例
             config: 配置信息
         """
-        self.message_handler = message_handler
+        self.channel = channel
         self.config = config
-        self.content_extractor = message_handler.content_extractor
+        self.message_handler = None # 通过 set_message_handler 注入
         
         # 处理配置
-        self.batch_size = config.get('system', {}).get('history_batch_size', 50)
-        self.process_delay = config.get('system', {}).get('history_process_delay', 0.5)
-        self.max_history_days = config.get('system', {}).get('max_history_days', 30)
-    
-    async def process_group_history(self, group_name: str, group_username: str) -> int:
+        self.batch_size = self.config.get('system', {}).get('history_batch_size', 50)
+        self.process_delay = self.config.get('system', {}).get('history_process_delay', 0.5)
+        self.max_history_days = self.config.get('system', {}).get('max_history_days', 30)
+
+        # 状态管理
+        self.state_file = Path.home() / ".dailybot/history_processor_state.json"
+        self.group_process_state = self._load_state()
+
+    def set_message_handler(self, handler: Any):
+        """注入消息处理器实例"""
+        self.message_handler = handler
+
+    def _load_state(self) -> Dict[str, int]:
+        """加载处理状态"""
+        try:
+            if self.state_file.exists():
+                with self.state_file.open('r', encoding='utf-8') as f:
+                    logger.info(f"从 {self.state_file} 加载历史消息处理状态。")
+                    return json.load(f)
+        except Exception as e:
+            logger.error(f"加载历史处理状态文件失败: {e}", exc_info=True)
+        return {}
+
+    def _save_state(self):
+        """保存处理状态"""
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            with self.state_file.open('w', encoding='utf-8') as f:
+                json.dump(self.group_process_state, f, indent=4)
+        except Exception as e:
+            logger.error(f"保存历史处理状态文件失败: {e}", exc_info=True)
+
+    async def get_new_history_count_by_id(self, group_id: str) -> int:
+        """根据群组ID获取待处理的历史消息数量"""
+        if self.config.get('channel_type') != 'mac_wechat' or not hasattr(self.channel, 'service'):
+            return 0
+            
+        mac_service = self.channel.service
+        if not mac_service:
+            return 0
+
+        last_timestamp = self.group_process_state.get(group_id)
+        if last_timestamp:
+            start_timestamp = last_timestamp
+        else:
+            start_time = datetime.now() - timedelta(days=self.max_history_days)
+            start_timestamp = int(start_time.timestamp())
+        
+        return mac_service.get_new_message_count_by_chatroom_id(group_id, start_timestamp)
+
+    async def process_group_history_by_id(self, group_id: str, group_name: str) -> int:
         """
         处理群组的历史消息
         
         Args:
-            group_name: 群组名称
-            group_username: 群组用户名
+            group_id: 群组ID
+            group_name: 群组名称（用于日志)
             
         Returns:
             处理的消息数量
         """
         try:
-            logger.info(f"开始处理群组 '{group_name}' 的历史消息")
+            logger.info(f"开始为群组 '{group_name}' (ID: {group_id}) 处理历史消息...")
             
             # 获取历史消息
-            messages = await self._get_group_history(group_username)
+            messages = await self._get_group_history(group_id)
             
             if not messages:
-                logger.info(f"群组 '{group_name}' 没有可处理的历史消息")
+                logger.info(f"群组 '{group_name}' 没有新的历史消息需要处理。")
                 return 0
             
+            logger.info(f"找到 {len(messages)} 条新的历史消息，开始分批处理...")
             # 分批处理消息
             processed_count = 0
             total_messages = len(messages)
             
             for i in range(0, total_messages, self.batch_size):
                 batch = messages[i:i + self.batch_size]
-                batch_processed = await self._process_message_batch(batch, group_name)
-                processed_count += batch_processed
+                batch_processed = await self._process_formatted_message_batch(batch, group_name)
                 
+                if batch_processed > 0:
+                    processed_count += batch_processed
+                    # 更新状态到当前批次的最后一条消息
+                    last_msg_time = batch[-1].get('create_time')
+                    if last_msg_time:
+                        self.group_process_state[group_id] = last_msg_time
+                        self._save_state()
+
                 # 显示进度
                 progress = (i + len(batch)) / total_messages * 100
-                logger.info(f"处理进度: {progress:.1f}% ({i + len(batch)}/{total_messages})")
+                logger.info(f"处理进度: {progress:.1f}% ({i + len(batch)}/{total_messages}) - 本批处理了 {batch_processed} 条含链接的消息。")
                 
-                # 避免处理过快
                 await asyncio.sleep(self.process_delay)
             
-            logger.info(f"群组 '{group_name}' 历史消息处理完成，共处理 {processed_count} 条包含链接的消息")
+            logger.info(f"群组 '{group_name}' 历史消息处理完成，共找到并处理了 {processed_count} 条包含链接的新消息。")
             return processed_count
             
         except Exception as e:
-            logger.error(f"处理群组历史消息时出错: {e}", exc_info=True)
+            logger.error(f"处理群组 '{group_name}' 历史消息时出错: {e}", exc_info=True)
             return 0
-    
-    async def _get_group_history(self, group_username: str) -> List[Dict[str, Any]]:
+
+    async def _get_group_history(self, group_id: str) -> List[Dict[str, Any]]:
         """
-        获取群组历史消息
-        
-        注意：由于itchat的限制，这里提供一个接口定义
-        实际实现可能需要使用其他方式获取历史消息
+        从Mac微信数据库获取群组历史消息
         
         Args:
-            group_username: 群组用户名
+            group_id: 群组ID
             
         Returns:
             消息列表
         """
-        # 这里是一个模拟实现
-        # 实际使用时，可能需要：
-        # 1. 使用其他微信API库
-        # 2. 从导出的聊天记录中读取
-        # 3. 使用微信PC端的数据库
-        
-        logger.warning("注意：当前使用模拟的历史消息获取，实际使用时需要实现真实的历史消息获取逻辑")
-        
-        # 返回空列表表示没有历史消息
-        return []
-    
-    async def process_exported_history(self, export_file: str, group_name: str) -> int:
-        """
-        处理导出的聊天记录文件
-        
-        Args:
-            export_file: 导出的聊天记录文件路径
-            group_name: 群组名称
-            
-        Returns:
-            处理的消息数量
-        """
-        try:
-            logger.info(f"开始处理导出的聊天记录: {export_file}")
-            
-            # 解析导出文件
-            messages = await self._parse_export_file(export_file)
-            
-            if not messages:
-                logger.info("导出文件中没有可处理的消息")
-                return 0
-            
-            # 处理消息
-            processed_count = 0
-            for i in range(0, len(messages), self.batch_size):
-                batch = messages[i:i + self.batch_size]
-                batch_processed = await self._process_message_batch(batch, group_name)
-                processed_count += batch_processed
-                await asyncio.sleep(self.process_delay)
-            
-            return processed_count
-            
-        except Exception as e:
-            logger.error(f"处理导出文件时出错: {e}", exc_info=True)
-            return 0
-    
-    async def _parse_export_file(self, export_file: str) -> List[Dict[str, Any]]:
-        """
-        解析导出的聊天记录文件
-        支持多种格式：txt、html、json等
-        
-        Args:
-            export_file: 文件路径
-            
-        Returns:
-            解析后的消息列表
-        """
-        messages = []
-        
-        try:
-            # 根据文件扩展名选择解析方式
-            if export_file.endswith('.txt'):
-                messages = await self._parse_txt_export(export_file)
-            elif export_file.endswith('.html'):
-                messages = await self._parse_html_export(export_file)
-            elif export_file.endswith('.json'):
-                messages = await self._parse_json_export(export_file)
-            else:
-                logger.warning(f"不支持的文件格式: {export_file}")
-                
-        except Exception as e:
-            logger.error(f"解析导出文件失败: {e}", exc_info=True)
-            
-        return messages
-    
-    async def _parse_txt_export(self, file_path: str) -> List[Dict[str, Any]]:
-        """解析TXT格式的导出文件"""
-        messages = []
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                
-            # 简单的文本解析逻辑
-            # 假设格式为: 时间 发送者: 内容
-            lines = content.split('\n')
-            
-            for line in lines:
-                if ':' in line and len(line) > 20:
-                    # 尝试解析消息
-                    parts = line.split(':', 2)
-                    if len(parts) >= 3:
-                        timestamp_str = parts[0].strip()
-                        sender = parts[1].strip()
-                        text = parts[2].strip()
-                        
-                        # 检查是否包含链接
-                        if self.message_handler.contains_link(text):
-                            messages.append({
-                                'CreateTime': int(time.time()),  # 使用当前时间作为占位符
-                                'User': {'NickName': sender},
-                                'Text': text,
-                                'Type': 'Text'
-                            })
-                            
-        except Exception as e:
-            logger.error(f"解析TXT文件失败: {e}", exc_info=True)
-            
-        return messages
-    
-    async def _parse_html_export(self, file_path: str) -> List[Dict[str, Any]]:
-        """解析HTML格式的导出文件"""
-        # TODO: 实现HTML格式解析
-        return []
-    
-    async def _parse_json_export(self, file_path: str) -> List[Dict[str, Any]]:
-        """解析JSON格式的导出文件"""
-        import json
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                
-            # 假设JSON格式包含messages数组
-            if isinstance(data, list):
-                messages = data
-            elif isinstance(data, dict) and 'messages' in data:
-                messages = data['messages']
-            else:
-                return []
-                
-            # 转换为标准格式
-            formatted_messages = []
-            for msg in messages:
-                if self.message_handler.contains_link(msg.get('text', '')):
-                    formatted_messages.append({
-                        'CreateTime': msg.get('timestamp', int(time.time())),
-                        'User': {'NickName': msg.get('sender', 'Unknown')},
-                        'Text': msg.get('text', ''),
-                        'Type': 'Text'
-                    })
-                    
-            return formatted_messages
-            
-        except Exception as e:
-            logger.error(f"解析JSON文件失败: {e}", exc_info=True)
+        if self.config.get('channel_type') != 'mac_wechat' or not hasattr(self.channel, 'service'):
+            logger.warning("历史消息获取仅在Mac微信通道下可用。")
             return []
-    
-    async def _process_message_batch(self, messages: List[Dict[str, Any]], group_name: str) -> int:
-        """
-        处理一批消息
-        
-        Args:
-            messages: 消息列表
-            group_name: 群组名称
+
+        try:
+            mac_service = self.channel.service
+            if not mac_service:
+                logger.error("MacWeChatService 不可用。")
+                return []
             
-        Returns:
-            处理的消息数量
+            # 确定起始时间戳
+            last_timestamp = self.group_process_state.get(group_id)
+            if last_timestamp:
+                start_timestamp = last_timestamp
+                logger.info(f"群组 '{group_id}' 存在处理记录，将从 {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')} 开始增量处理。")
+            else:
+                start_time = datetime.now() - timedelta(days=self.max_history_days)
+                start_timestamp = int(start_time.timestamp())
+                logger.info(f"群组 '{group_id}' 为首次处理，将获取过去 {self.max_history_days} 天的消息。")
+
+            # 调用服务层方法获取消息
+            messages = mac_service.get_messages_by_chatroom_id(group_id, start_timestamp)
+
+            return messages
+        except Exception as e:
+            logger.error(f"从数据库获取群组 '{group_id}' 历史消息失败: {e}", exc_info=True)
+            return []
+
+    async def _process_formatted_message_batch(self, messages: List[Dict[str, Any]], group_name: str) -> int:
         """
-        processed_count = 0
+        处理已经格式化好的消息批次 (主要用于Mac微信历史记录)
+        """
+        if not self.message_handler:
+            logger.error("Message Handler 未注入，无法处理历史消息。")
+            return 0
         
+        processed_count = 0
         for msg in messages:
             try:
-                # 添加群组信息到消息
-                msg['User'] = msg.get('User', {})
-                msg['User']['NickName'] = msg['User'].get('NickName', group_name)
+                # 检查消息内容是否包含链接
+                content = msg.get('content', '')
+                if not self.message_handler.contains_link(content):
+                    continue
+
+                # 构造Context对象
+                context = {
+                    "channel": "mac_wechat_history",
+                    "msg": msg,
+                    "session_id": msg.get("room_id", group_name)
+                }
+
+                # 使用消息处理器的统一方法处理
+                reply = await self.message_handler.handle_sharing_message(context)
                 
-                # 使用消息处理器的统一方法处理历史消息
-                extracted_content = await self.message_handler.process_message_for_history(msg, is_group=True)
-                
-                if extracted_content:
-                    # 保存到笔记
-                    await self.message_handler.note_manager.save_content(extracted_content)
-                    
-                    # 更新RAG
-                    if self.message_handler.rag_service:
-                        await self.message_handler.rag_service.add_document(extracted_content)
-                    
+                if reply:
                     processed_count += 1
-                    
             except Exception as e:
-                logger.error(f"处理历史消息时出错: {e}", exc_info=True)
+                logger.error(f"处理来自 '{group_name}' 的历史消息时出错: {e}", exc_info=True)
                 continue
-                
-        return processed_count
-    
-    def _get_context_from_batch(self, messages: List[Dict[str, Any]], target_msg: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        从批次中获取目标消息的上下文
-        
-        Args:
-            messages: 消息列表
-            target_msg: 目标消息
-            
-        Returns:
-            上下文消息列表
-        """
-        context_messages = []
-        target_time = target_msg.get('CreateTime', 0)
-        context_window = self.config['content_extraction']['context_time_window']
-        
-        for msg in messages:
-            msg_time = msg.get('CreateTime', 0)
-            if abs(msg_time - target_time) <= context_window and msg != target_msg:
-                context_messages.append(msg)
-                
-        return sorted(context_messages, key=lambda x: x.get('CreateTime', 0)) 
+        return processed_count 
