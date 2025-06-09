@@ -34,21 +34,20 @@
     "proxy": ""
   },
   
-  "note_backend": "obsidian",
+  "note_backend": "google_docs",
   
   "obsidian": {
     "vault_path": "/path/to/your/vault",
-    "daily_notes_folder": "Daily Notes",
-    "knowledge_base_folder": "Knowledge Base",
-    "template_path": "Templates/Daily Note Template.md",
     "note_files": [
       {
         "name": "AI研究笔记",
+        "folder": "AI",
         "filename": "AI研究笔记.md",
         "description": "人工智能相关的论文、技术和理论研究"
       },
       {
         "name": "机器人技术",
+        "folder": "Robotics",
         "filename": "机器人技术.md", 
         "description": "机器人、具身智能、操作和控制相关内容"
       }
@@ -61,7 +60,7 @@
   
   "google_docs": {
     "credentials_file": "config/google_credentials.json",
-    "note_documents": [
+    "note_files": [
       {
         "name": "DaliyAI笔记本",
         "document_id": "1B6_K3CB0nH1obz2dfltVvwVVFOklKlUPhHHG0aNwLxw",

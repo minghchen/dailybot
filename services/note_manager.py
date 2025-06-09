@@ -1,991 +1,456 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-笔记管理器
-负责管理笔记的读写，支持Obsidian和Google Docs
-支持多文件管理和智能分类
+笔记管理器 (高级协调器)
+负责根据配置初始化并协调不同的笔记后端服务（如Obsidian或Google Docs）。
 """
 
-import os
 import re
 import json
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Dict, Any, List, Optional, Literal
 from loguru import logger
-import frontmatter
-import markdown
-import hashlib
+from pydantic import BaseModel, Field
 
 from services.google_docs_manager import GoogleDocsManager
+from services.obsidian_manager import ObsidianManager
+
+
+class InsertionDecision(BaseModel):
+    """
+    一个Pydantic模型，用于规范LLM关于内容插入位置的决策。
+    """
+    thought: str = Field(..., description="对为何做出此决策的简要中文解释。")
+    decision: Literal["insert_under_leaf", "insert_into_miscellaneous", "create_new_subheading"] = Field(..., description="最终决策。")
+    target_heading: Optional[str] = Field(None, description="当决策为 'insert_under_leaf' 时，目标叶子节点的完整文本。")
+    parent_heading: Optional[str] = Field(None, description="当决策为 'insert_into_miscellaneous' 或 'create_new_subheading' 时，父级现有标题的完整文本。")
+    new_heading_text: Optional[str] = Field(None, description="当决策是 'create_new_subheading' 时，新子标题的文本（不应是文章标题）。")
 
 
 class NoteManager:
-    """笔记管理器"""
+    """
+    笔记管理器。
+    作为一个外观（Facade），将请求路由到具体的后端笔记管理器。
+    """
     
     def __init__(self, config: Dict[str, Any]):
         """
         初始化笔记管理器
         
         Args:
-            config: 配置信息
+            config: 全局应用配置
         """
         self.config = config
-        self.note_backend = config.get('note_backend', 'obsidian')
-        self.llm_service = None # Will be injected
+        self.note_backend_name = config.get('note_backend', 'obsidian')
+        self.backend_manager = None
+        self.llm_service = None
 
-        # 恢复到之前的初始化逻辑以修复导入错误
-        if self.note_backend == 'obsidian':
-            self._init_obsidian(config.get('obsidian', {}))
-        elif self.note_backend == 'google_docs':
-            self.google_docs_manager = GoogleDocsManager(config.get('google_docs', {}))
-            self.note_files = config.get('google_docs', {}).get('note_documents', [])
+        if self.note_backend_name == 'obsidian':
+            obsidian_config = config.get('obsidian', {})
+            self.backend_manager = ObsidianManager(obsidian_config)
+            self.note_files_config = obsidian_config.get('note_files', [])
+        elif self.note_backend_name == 'google_docs':
+            gdocs_config = config.get('google_docs', {})
+            self.backend_manager = GoogleDocsManager(gdocs_config)
+            self.note_files_config = gdocs_config.get('note_files', [])
         else:
-            raise ValueError(f"不支持的笔记后端: {self.note_backend}")
+            raise ValueError(f"不支持的笔记后端: {self.note_backend_name}")
 
-        logger.info(f"笔记管理器初始化成功，使用后端: {self.note_backend}")
+        logger.info(f"笔记管理器初始化成功，使用后端: {self.note_backend_name}")
     
-    def set_llm_service(self, llm_service):
-        """设置LLM服务（用于智能分类）"""
+    def set_llm_service(self, llm_service: Any):
+        """
+        设置LLM服务，并将其注入到具体的后端管理器中。
+        """
         self.llm_service = llm_service
-    
-    def _init_obsidian(self, obsidian_config: Dict[str, Any]):
-        """初始化Obsidian配置"""
-        self.vault_path = Path(obsidian_config['vault_path'])
-        self.daily_notes_folder = self.vault_path / obsidian_config['daily_notes_folder']
-        self.kb_folder = self.vault_path / obsidian_config['knowledge_base_folder']
-        
-        # 笔记文件配置
-        self.note_files = obsidian_config.get('note_files', [])
-        
-        # 确保目录存在
-        self._ensure_directories()
-        
-        # 如果没有配置笔记文件，使用旧的文件夹扫描方式
-        if not self.note_files:
-            logger.warning("未配置note_files，将使用文件夹扫描模式")
-            self._scan_categories()
-    
-    def _scan_categories(self) -> Dict[str, str]:
-        """
-        扫描知识库文件夹，动态获取现有分类（兼容旧版本）
-        
-        Returns:
-            分类映射字典
-        """
-        self.categories = {}
-        
-        try:
-            if self.kb_folder.exists():
-                # 遍历知识库文件夹下的所有子文件夹
-                for item in self.kb_folder.iterdir():
-                    if item.is_dir() and not item.name.startswith('.'):
-                        # 使用文件夹名作为分类
-                        category_key = self._folder_name_to_key(item.name)
-                        self.categories[category_key] = item.name
-                        logger.debug(f"发现分类: {category_key} -> {item.name}")
-            
-            # 如果没有找到任何分类，创建默认分类
-            if not self.categories:
-                self.categories = {
-                    'papers': '学术论文',
-                    'articles': '文章资料',
-                    'videos': '视频笔记',
-                    'others': '其他资料'
-                }
-                logger.info("未找到现有分类，使用默认分类")
-            else:
-                # 确保至少有一个"其他"分类
-                if 'others' not in self.categories and '其他' not in self.categories.values():
-                    self.categories['others'] = '其他资料'
-            
-        except Exception as e:
-            logger.error(f"扫描分类时出错: {e}")
-            # 使用默认分类
-            self.categories = {'others': '其他资料'}
-        
-        logger.info(f"当前分类: {self.categories}")
-        return self.categories
-    
-    def _folder_name_to_key(self, folder_name: str) -> str:
-        """
-        将文件夹名转换为分类键
-        
-        Args:
-            folder_name: 文件夹名
-            
-        Returns:
-            分类键
-        """
-        # 简单的转换规则
-        name_lower = folder_name.lower()
-        
-        # 常见映射
-        mappings = {
-            '学术论文': 'papers',
-            '论文': 'papers',
-            'papers': 'papers',
-            '文章资料': 'articles',
-            '文章': 'articles',
-            'articles': 'articles',
-            '视频笔记': 'videos',
-            '视频': 'videos',
-            'videos': 'videos',
-            '技术': 'technology',
-            'tech': 'technology',
-            '应用': 'application',
-            '理论': 'theory',
-            '产业': 'industry',
-            '其他': 'others',
-            'others': 'others'
-        }
-        
-        for key, value in mappings.items():
-            if key in name_lower:
-                return value
-        
-        # 如果没有匹配，使用文件夹名的简化版本作为键
-        return re.sub(r'[^\w]', '_', folder_name.lower())
-    
-    def _ensure_directories(self):
-        """确保必要的目录存在"""
-        # 创建日记目录
-        self.daily_notes_folder.mkdir(parents=True, exist_ok=True)
-        
-        # 创建知识库目录
-        self.kb_folder.mkdir(parents=True, exist_ok=True)
-    
-    def _sanitize_filename(self, filename: str) -> str:
-        """
-        清理文件名，移除非法字符
-        
-        Args:
-            filename: 原始文件名
-            
-        Returns:
-            清理后的文件名
-        """
-        # 移除或替换非法字符
-        filename = re.sub(r'[<>:"/\\|?*]', '', filename)
-        # 限制长度
-        if len(filename) > 200:
-            filename = filename[:200]
-        return filename.strip()
+        if self.backend_manager and hasattr(self.backend_manager, 'set_llm_service'):
+            self.backend_manager.set_llm_service(llm_service)
+            logger.info(f"LLM服务已成功注入到 {self.note_backend_name} 管理器。")
     
     async def save_content(self, content_data: Dict[str, Any]):
         """
-        保存提取的内容到指定的笔记后端
+        将提取的内容路由到相应的后端管理器进行保存。
+        这是一个包含两步LLM决策的完整流程。
         
         Args:
-            content_data: 提取的内容数据
+            content_data: 从ContentExtractor提取并处理过的内容数据。
         """
-        logger.info(f"NoteManager 开始保存内容到 {self.note_backend}...")
-        logger.debug(f"待保存数据: Title='{content_data.get('title', '')}', Type='{content_data.get('type', '')}', Category='{content_data.get('category', '')}'")
-        try:
-            if self.note_backend == 'obsidian':
-                await self._save_to_obsidian(content_data)
-            elif self.note_backend == 'google_docs':
-                await self._save_to_google_docs(content_data)
-            
+        if not self.backend_manager:
+            logger.error("没有可用的笔记后端管理器，无法保存内容。")
+            return
+        
+        # 步骤 1: 全局查重
+        if await self._check_for_duplicates(content_data):
             log_title = content_data.get('structured_note', {}).get('title', '未知标题')
-            logger.info(f"NoteManager 确认内容 '{log_title}' 已成功交由 {self.note_backend} 处理。")
-        except Exception as e:
-            logger.error(f"NoteManager 在调用后端保存方法时发生异常: {e}", exc_info=True)
-            raise # 重新抛出异常，让上层知道发生了错误
-    
-    async def _select_note_file_and_category(self, content_data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
-        """
-        使用LLM智能选择笔记文件和类别
-        
-        Args:
-            content_data: 内容数据
-            
-        Returns:
-            (选中的笔记文件配置, 类别名称)
-        """
+            logger.info(f"内容 '{log_title}' 已在笔记库中存在，跳过保存。")
+            return
+
         if not self.llm_service:
-            # 如果没有LLM服务，使用默认选择
-            if self.note_files:
-                return self.note_files[0], "其他"
-            else:
-                return None, "其他"
+            logger.error("LLM服务未设置，无法执行智能分类和保存。")
+            # TODO: 在此可以实现一个不依赖LLM的简单保存逻辑作为后备
+            return
+
+        logger.info(f"NoteManager开始处理内容 '{content_data.get('structured_note', {}).get('title', '')}'，后端: {self.note_backend_name}")
         
-        # 构建选择提示
-        title = content_data.get('title', '')
-        summary = content_data.get('summary', '')
-        url = content_data.get('url', '')
-        
-        # 获取可用的笔记文件
-        if self.note_files:
-            files_info = "\n".join([
-                f"{i+1}. {f['name']}: {f['description']}"
-                for i, f in enumerate(self.note_files)
-            ])
-            
-            prompt = f"""请根据以下内容，选择最合适的笔记文件：
-
-内容标题：{title}
-内容摘要：{summary[:300]}
-来源URL：{url}
-
-可选的笔记文件：
-{files_info}
-
-请回答：
-1. 选择的文件编号（如：1）
-2. 在该文件中应该归类到哪个章节或标题下（如果是新类别，请给出建议的标题）
-
-格式：
-文件：[编号]
-类别：[类别名称]"""
-            
-            try:
-                response = await self.llm_service.chat(prompt)
-                
-                # 解析响应
-                file_match = re.search(r'文件[：:]\s*(\d+)', response)
-                category_match = re.search(r'类别[：:]\s*(.+)', response)
-                
-                if file_match and category_match:
-                    file_idx = int(file_match.group(1)) - 1
-                    category = category_match.group(1).strip()
-                    
-                    if 0 <= file_idx < len(self.note_files):
-                        return self.note_files[file_idx], category
-                
-            except Exception as e:
-                logger.error(f"LLM选择文件失败: {e}")
-        
-        # 默认选择
-        if self.note_files:
-            return self.note_files[0], "其他"
-        else:
-            return None, "其他"
-    
-    async def _save_to_google_docs(self, content_data: Dict[str, Any]):
-        """
-        保存内容到Google Docs
-        """
         try:
-            # 自动选择第一个文档作为目标
-            if not self.note_files:
-                raise ValueError("Google Docs配置中未找到任何note_documents，请检查config.json。")
+            # --- 步骤 2: 使用LLM选择目标笔记文件 ---
+            target_doc_config = await self._select_target_document_with_llm(content_data)
+            if not target_doc_config:
+                logger.error("未能确定目标笔记文件，取消保存。")
+                return
+
+            # --- 步骤 3: 获取文档结构 ---
+            doc_id_or_path = target_doc_config.get('document_id') if self.note_backend_name == 'google_docs' else self.backend_manager.get_full_path(target_doc_config)
             
-            document_id = self.note_files[0].get('document_id')
-            if not document_id:
-                raise ValueError("在Google Docs配置的第一个note_document中未找到有效的'document_id'字段，请检查config.json。")
+            doc_structure = await self.backend_manager.get_document_structure(doc_id_or_path)
+            if not doc_structure:
+                logger.error(f"无法获取文档 {doc_id_or_path} 的结构，取消保存。")
+                return
 
-            # --- 优化流程：先获取文档，进行查重 ---
-            document = await self.google_docs_manager.get_document_content(document_id)
-            if not document:
-                raise ConnectionError(f"无法获取文档 {document_id} 的内容。")
+            # --- 步骤 4: 使用LLM决定在文件内的插入位置 ---
+            logger.info("正在调用LLM以决定内容的最佳插入位置...")
+            decision = await self._decide_insertion_location_with_llm(content_data, doc_structure)
+            logger.info(f"LLM决策: {decision.decision} | 目标: '{decision.target_heading or decision.parent_heading}' | 新标题: '{decision.new_heading_text}' | 理由: {decision.thought}")
 
-            if await self.google_docs_manager._check_duplicate(document, content_data):
-                log_title = content_data.get('structured_note', {}).get('title', '未知标题')
-                logger.info(f"内容 '{log_title}' 已存在于文档中，跳过保存。")
-                return # 查重成功，直接返回
-
-            # --- LLM动态分类逻辑 ---
-            if self.llm_service:
-                logger.info(f"开始为文档 '{document_id}' 进行LLM动态分类...")
-                
-                # 1. 获取文档的现有标题
-                existing_headings = await self.google_docs_manager.get_document_headings(document_id)
-                
-                # 2. 构建智能分类的Prompt
-                structured_note = content_data.get('structured_note', {})
-                title = structured_note.get('title', '')
-                summary = structured_note.get('summary', '')
-                
-                prompt = f"""你是一个智能笔记分类助手。请根据以下内容的标题和摘要，决定它应该属于哪个类别。
-
-[内容信息]
-标题: {title}
-摘要: {summary}
-
-[文档中已有的类别（请优先选择）]
-{', '.join(existing_headings) if existing_headings else '（本文档尚无分类）'}
-
-[如果以上类别都不合适，可以从以下通用分类中选择或创造一个更合适的新分类]
-- AI方向的时讯和研究
-- LLM
-- LLM Agent
-- Robotics
-- 世界模型
-- 应用案例
-- 技术进展
-
-你的任务：
-1. 分析内容，理解其核心主题。
-2. 对比内容和[文档中已有的类别]，如果匹配，请直接返回那个类别名称。
-3. 如果不匹配，请从[通用分类]中选择一个最合适的，或者根据内容自己创建一个简洁、明确的新类别（例如"多模态学习"）。
-4. **请只返回最终的类别名称，不要包含任何其他解释或前缀。**
-
-类别名称："""
-                
-                # 3. 调用LLM获取分类
-                try:
-                    chosen_category = await self.llm_service.chat(prompt)
-                    chosen_category = chosen_category.strip().replace('类别名称：', '').strip()
-                    logger.info(f"LLM建议的分类是: '{chosen_category}'")
-                    
-                    # 4. 更新content_data中的分类
-                    content_data['category'] = chosen_category
-                except Exception as e:
-                    logger.error(f"LLM动态分类失败，将使用默认分类: {e}")
-                    content_data['category'] = '未分类'
-            else:
-                logger.warning("LLM服务未设置，将使用默认分类。")
-                content_data['category'] = content_data.get('category', '未分类')
-
-            # --- 最终保存，传入已获取的文档避免重复请求 ---
-            await self.google_docs_manager.save_content(
-                document_id, 
+            # --- 步骤 5: 根据决策计算具体的插入指令 ---
+            insert_location = self._calculate_insert_location(decision, doc_structure)
+            
+            # --- 步骤 6: 指示后端管理器执行保存操作 ---
+            await self.backend_manager.execute_save(
+                doc_id_or_path, 
                 content_data, 
-                document=document
+                insert_location,
+                document=doc_structure.get('raw_document') # 传递预加载的文档以优化
             )
 
         except Exception as e:
-            # 只记录日志，然后将原始异常重新抛出
-            logger.error(f"保存内容到Google Docs时出错: {e}", exc_info=True)
+            logger.error(f"NoteManager 在处理保存流程时发生异常: {e}", exc_info=True)
             raise
     
-    async def _save_to_obsidian(self, content_data: Dict[str, Any]):
-        """保存到Obsidian"""
+    async def _select_target_document_with_llm(self, content_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """第一步决策：使用LLM根据内容和文件描述，选择最合适的笔记文件。"""
+        if not self.note_files_config:
+            raise ValueError(f"后端 '{self.note_backend_name}' 没有在config.json中配置任何 'note_files'。")
+        
+        if len(self.note_files_config) == 1:
+            logger.info("只有一个可用的笔记文件，将直接选择它。")
+            return self.note_files_config[0]
+
+        title = content_data.get('structured_note', {}).get('title', '')
+        summary = content_data.get('structured_note', {}).get('summary', '')
+
+        options_str = "\n".join([
+            f"{i+1}. 文件名: {f.get('name', '未命名')}\n   描述: {f.get('description', '无描述')}"
+            for i, f in enumerate(self.note_files_config)
+        ])
+
+        prompt = f"""
+你是一位笔记管理员，需要决定一篇新笔记应该归入哪个笔记文件。
+
+[笔记内容]
+- 标题: {title}
+- 摘要: {summary}
+
+[可选的笔记文件]
+{options_str}
+
+[你的任务]
+请分析笔记内容和每个文件的描述，选择最匹配的 **文件编号**。
+
+[输出格式]
+请严格按照以下格式回答，只返回一个数字，不要添加任何其他解释：
+文件编号: [一个数字]
+"""
+        
         try:
-            title = content_data.get('title', '未命名内容')
-            url = content_data.get('url', '')
-            summary = content_data.get('summary', '')
-            context = content_data.get('context', '')
-            extracted_at = content_data.get('extracted_at', datetime.now())
-            raw_content = content_data.get('raw_content', '')
-            source_user = content_data.get('source_user', '')
-            group_name = content_data.get('group_name', '')
-            is_history = content_data.get('is_history', False)
-            article_title = content_data.get('article_title', '')
-            content_type = content_data.get('type', 'web_link')
-            
-            # 检查是否是重复内容
-            if await self._is_duplicate_content(url, title):
-                logger.info(f"跳过重复内容: {title}")
-                return
-            
-            # 智能选择笔记文件和类别
-            selected_file, category = await self._select_note_file_and_category(content_data)
-            
-            # 如果有配置笔记文件，使用新的保存方式
-            if selected_file:
-                await self._save_to_note_file(
-                    selected_file, category, content_data,
-                    title, url, summary, context, extracted_at,
-                    article_title, content_type, source_user, 
-                    group_name, is_history
-                )
-            else:
-                # 使用旧的文件夹方式
-                # 构建笔记内容
-                note_content = self._build_formatted_note_content(
-                    title=title,
-                    url=url,
-                    summary=summary,
-                    context=context,
-                    extracted_at=extracted_at,
-                    raw_content=raw_content,
-                    article_title=article_title,
-                    content_type=content_type,
-                    source_user=source_user,
-                    group_name=group_name,
-                    is_history=is_history
-                )
+            response = await self.llm_service.chat(prompt)
+            match = re.search(r'\d+', response)
+            if match:
+                file_idx = int(match.group(0)) - 1
+                if 0 <= file_idx < len(self.note_files_config):
+                    selected_doc = self.note_files_config[file_idx]
+                    logger.info(f"LLM选择了文件: '{selected_doc.get('name')}'")
+                    return selected_doc
+        except Exception as e:
+            logger.error(f"LLM选择文件失败: {e}", exc_info=True)
+        
+        logger.warning("LLM选择文件失败，将回退到第一个文件。")
+        return self.note_files_config[0]
+    
+    async def _decide_insertion_location_with_llm(self, content_data: Dict[str, Any], doc_structure: Dict[str, Any]) -> InsertionDecision:
+        """第二步决策：调用LLM来决定新内容在文件内的最佳插入位置。"""
+        tree_str = self._format_headings_as_tree(doc_structure['headings'])
+        title = content_data.get('structured_note', {}).get('title', '')
+        summary = content_data.get('structured_note', {}).get('summary', '')
+
+        # 预处理，找出所有的叶子节点
+        headings = doc_structure['headings']
+        leaf_nodes = self._get_leaf_nodes(headings)
+        leaf_nodes_str = "\n".join([f"- {node['text']}" for node in leaf_nodes]) or "无"
+
+        prompt = f"""
+你是一位严谨的图书管理员，你的任务是根据一份现有文档的目录结构，将一份新内容精准地归类。请遵循最保守、最稳定的分类策略。
+
+[文档现有目录结构]
+```
+{tree_str if tree_str else "此文档为空。"}
+```
+
+[可供直接归类的叶子节点列表]
+{leaf_nodes_str}
+
+[待插入的新内容]
+- 标题: {title}
+- 摘要: {summary}
+
+[你的决策层级（请严格遵守）]
+1.  **第一优先级 (insert_under_leaf)**: 检查新内容是否与上述"叶子节点列表"中的某个标题主题**高度匹配**。如果是，请选择此项，并将内容放入该叶子节点下。这是最优先的选项。
+2.  **第二优先级 (insert_into_miscellaneous)**: 如果内容与任何叶子节点都不匹配，请找到一个最相关的**父标题**，并将内容放入该父标题下的"其他"分类中。
+3.  **第三优先级 (create_new_subheading)**: **（仅在绝对必要时使用）** 如果内容确实代表了一个在父标题下非常重要且**缺失**的子分类，才允许创建一个新的、有意义的子标题。请**不要**轻易使用此选项，也**禁止**使用文章标题作为新标题。
+
+[注意]
+- **禁止创建新的一级标题**，除非文档完全为空。
+- 你的目标是维护一个整洁、有序的笔记结构，而不是随意扩张。
+
+请仔细思考并用中文解释你的决策过程，然后做出最终决策。
+"""
+        
+        # 如果文档为空，则强制创建新的一级标题
+        if not headings:
+            return InsertionDecision(
+                thought="文档为空，必须创建一个新的一级标题来存放内容。",
+                decision="create_new_subheading", # 在_calculate_insert_location中会处理成一级标题
+                parent_heading=None,
+                new_heading_text=(content_data.get('structured_note', {}).get('title', '未命名内容'))
+            )
+
+        return await self.llm_service.aclient.chat.completions.create(
+            model=self.llm_service.model,
+            response_model=InsertionDecision,
+            messages=[{"role": "user", "content": prompt}],
+            max_retries=2,
+        )
+
+    def _get_leaf_nodes(self, headings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """从标题列表中识别出所有的叶子节点（没有子标题的标题）。"""
+        leaf_nodes = []
+        for i, heading in enumerate(headings):
+            is_leaf = True
+            # 检查后续的标题
+            for j in range(i + 1, len(headings)):
+                next_heading = headings[j]
+                # 如果下一个标题的层级更高，说明当前标题不是叶子
+                if next_heading['level'] > heading['level']:
+                    is_leaf = False
+                    break
+                # 如果遇到同级或更低级别的标题，说明已经超出了当前子树
+                if next_heading['level'] <= heading['level']:
+                    break
+            if is_leaf:
+                leaf_nodes.append(heading)
+        return leaf_nodes
+
+    def _format_headings_as_tree(self, headings: List[Dict[str, Any]]) -> str:
+        """将标题列表格式化为缩进的树状结构字符串。"""
+        tree_lines = []
+        for heading in headings:
+            indent = "  " * (heading['level'] - 1)
+            tree_lines.append(f"{indent}- {heading['text']} (层级 {heading['level']})")
+        return "\n".join(tree_lines)
+
+    def _calculate_insert_location(self, decision: InsertionDecision, doc_structure: Dict[str, Any]) -> Dict[str, Any]:
+        """根据LLM的决策计算出具体的插入位置和操作。"""
+        headings_map = {h['text'].strip(): h for h in doc_structure['headings']}
+        doc_end_pos_raw = doc_structure['end_of_document']
+
+        # 针对不同后端调整在文档末尾插入的位置
+        if self.note_backend_name == 'google_docs':
+            # Google Docs API要求插入点必须严格小于段落的endIndex
+            doc_end_pos = max(1, doc_end_pos_raw - 1)
+        else:
+            # 对于Obsidian（基于行号），末尾位置是正确的
+            doc_end_pos = doc_end_pos_raw
+
+        decision_action = decision.decision
+        
+        if decision_action == "insert_under_leaf":
+            target_heading_text = (decision.target_heading or "").strip()
+            if target_heading_text in headings_map:
+                insertion_pos = self._find_end_of_section(headings_map[target_heading_text], doc_structure)
+                return { "action": "insert_under", "position": insertion_pos }
+
+        elif decision_action == "insert_into_miscellaneous":
+            parent_heading_text = (decision.parent_heading or "").strip()
+            if parent_heading_text in headings_map:
+                parent_heading = headings_map[parent_heading_text]
                 
-                # 保存到知识库
-                kb_path = self._get_kb_note_path(title, category)
-                await self._save_note(kb_path, note_content, content_data)
-            
-            # 在日记中添加引用（仅对非历史消息）
-            if not is_history:
-                await self._add_to_daily_note(title, None, extracted_at, group_name)
-            
-            logger.info(f"内容已保存到Obsidian笔记")
-            
-        except Exception as e:
-            logger.error(f"保存内容到Obsidian时出错: {e}", exc_info=True)
-            raise
-    
-    async def _save_to_note_file(self, note_file: Dict[str, Any], category: str, 
-                                content_data: Dict[str, Any], title: str, url: str, 
-                                summary: str, context: str, extracted_at: datetime,
-                                article_title: str, content_type: str, source_user: str,
-                                group_name: str, is_history: bool):
-        """保存到指定的笔记文件"""
-        # 构建笔记文件路径
-        note_path = self.kb_folder / note_file['filename']
-        
-        # 读取现有内容
-        existing_content = ""
-        existing_categories = {}
-        
-        if note_path.exists():
-            existing_content = note_path.read_text(encoding='utf-8')
-            # 解析现有的类别结构
-            existing_categories = self._parse_note_categories(existing_content)
-        else:
-            # 创建新文件，添加标题
-            existing_content = f"# {note_file['name']}\n\n"
-        
-        # 构建新条目
-        new_entry = self._build_note_entry(
-            title=title,
-            url=url,
-            summary=summary,
-            article_title=article_title,
-            content_type=content_type,
-            extracted_at=extracted_at
-        )
-        
-        # 将新条目插入到合适的位置
-        updated_content = self._insert_entry_to_category(
-            existing_content, 
-            category, 
-            new_entry,
-            existing_categories
-        )
-        
-        # 保存更新后的内容
-        with open(note_path, 'w', encoding='utf-8') as f:
-            f.write(updated_content)
-        
-        logger.info(f"内容已添加到 {note_file['name']} 的 {category} 类别下")
-    
-    def _parse_note_categories(self, content: str) -> Dict[str, int]:
-        """
-        解析笔记中的类别结构
-        
-        Returns:
-            类别名称到行号的映射
-        """
-        categories = {}
-        lines = content.split('\n')
-        
-        for i, line in enumerate(lines):
-            # 查找二级标题作为类别
-            if line.startswith('## '):
-                category_name = line[3:].strip()
-                categories[category_name] = i
-        
-        return categories
-    
-    def _build_note_entry(self, title: str, url: str, summary: str,
-                         article_title: str, content_type: str, 
-                         extracted_at: datetime) -> str:
-        """构建笔记条目"""
-        # 提取日期（精确到月份）
-        if 'arxiv' in content_type or 'arxiv' in url.lower():
-            # 尝试从URL或标题提取arxiv日期
-            date_match = re.search(r'(\d{2})(\d{2})\.(\d{4,5})', url + ' ' + title)
-            if date_match:
-                year = f"20{date_match.group(1)}"  # 假设是20xx年
-                month = date_match.group(2)
-                date_str = f"{year}-{month}"
-            else:
-                date_str = extracted_at.strftime('%Y-%m')
-        else:
-            date_str = extracted_at.strftime('%Y-%m-%d')
-        
-        # 构建链接行
-        if article_title and article_title != title:
-            link_line = f"[{article_title}]({url})"
-        else:
-            source = self._extract_source_from_url(url)
-            link_line = f"[{source}]({url})"
-        
-        # 构建条目
-        entry = f"""
-**{date_str} {title}**  
-{link_line}  
-{summary}
-"""
-        
-        return entry.strip()
-    
-    def _insert_entry_to_category(self, content: str, category: str, 
-                                 new_entry: str, existing_categories: Dict[str, int]) -> str:
-        """将新条目插入到指定类别"""
-        lines = content.split('\n')
-        
-        if category in existing_categories:
-            # 找到类别的位置
-            category_line = existing_categories[category]
-            
-            # 找到下一个类别的位置或文件结尾
-            next_category_line = len(lines)
-            for cat, line_num in existing_categories.items():
-                if line_num > category_line:
-                    next_category_line = min(next_category_line, line_num)
-            
-            # 在类别后插入新条目
-            # 查找类别下的第一个非空行
-            insert_position = category_line + 1
-            while insert_position < next_category_line and insert_position < len(lines):
-                if lines[insert_position].strip():
-                    break
-                insert_position += 1
-            
-            # 插入新条目
-            lines.insert(insert_position, '\n' + new_entry + '\n')
-        else:
-            # 创建新类别
-            # 在文件末尾添加新类别
-            if lines and lines[-1].strip():  # 如果最后一行不是空行
-                lines.append('')
-            
-            lines.append(f'## {category}')
-            lines.append('')
-            lines.append(new_entry)
-            lines.append('')
-        
-        return '\n'.join(lines)
-    
-    def _build_formatted_note_content(self, title: str, url: str, summary: str,
-                                    context: str, extracted_at: datetime, 
-                                    raw_content: str = '', article_title: str = '', 
-                                    content_type: str = 'web_link', source_user: str = '', 
-                                    group_name: str = '', is_history: bool = False) -> str:
-        """构建格式化的笔记内容（用于旧的文件夹方式）"""
-        # 提取日期（精确到月份）
-        if 'arxiv' in content_type or 'arxiv' in url.lower():
-            # 尝试从URL或标题提取arxiv日期
-            date_match = re.search(r'(\d{2})(\d{2})\.(\d{4,5})', url + ' ' + title)
-            if date_match:
-                year = f"20{date_match.group(1)}"  # 假设是20xx年
-                month = date_match.group(2)
-                date_str = f"{year}-{month}"
-            else:
-                # 如果无法解析，使用当前日期
-                date_str = extracted_at.strftime('%Y-%m')
-        else:
-            # 使用提取日期
-            if isinstance(extracted_at, str):
-                extracted_at = datetime.fromisoformat(extracted_at)
-            date_str = extracted_at.strftime('%Y-%m-%d')
-        
-        # 构建标签
-        tags = []
-        if 'arxiv' in url.lower():
-            tags.append('#论文')
-        elif 'bilibili' in url.lower():
-            tags.append('#视频')
-        elif 'mp.weixin' in url.lower():
-            tags.append('#公众号')
-        else:
-            tags.append('#网页')
-        
-        if group_name:
-            tags.append(f'#群组/{self._sanitize_filename(group_name)}')
-        
-        if is_history:
-            tags.append('#历史记录')
-        
-        # 构建第二行（文章链接）
-        if article_title and article_title != title:
-            link_line = f"[{article_title}]({url})"
-        else:
-            # 从URL中提取来源
-            source = self._extract_source_from_url(url)
-            link_line = f"[{source}]({url})"
-        
-        # 确保标题完整（特别是论文标题）
-        # 如果标题被截断（以...结尾），尝试从原始内容中获取完整标题
-        if title.endswith('...') and raw_content:
-            # 尝试从原始内容中提取完整标题
-            full_title = self._extract_full_title(raw_content, title)
-            if full_title:
-                title = full_title
-        
-        # 构建笔记
-        content = f"""# {title}
+                # 如果父标题本身就是"其他"，直接在其末尾插入
+                if parent_heading['text'].strip() in ["其他", "未分类", "Miscellaneous"]:
+                    insertion_pos = self._find_end_of_section(parent_heading, doc_structure)
+                    return { "action": "insert_under", "position": insertion_pos }
 
-{' '.join(tags)}
+                # 否则，寻找或创建"其他"子标题
+                existing_misc_heading = self._find_subheading(parent_heading, ["其他", "未分类", "Miscellaneous"], doc_structure)
+                
+                if existing_misc_heading:
+                    insertion_pos = self._find_end_of_section(existing_misc_heading, doc_structure)
+                    return { "action": "insert_under", "position": insertion_pos }
+                else:
+                    insertion_pos = self._find_end_of_section(parent_heading, doc_structure)
+                    return {
+                        "action": "create_new_heading",
+                        "position": insertion_pos,
+                        "new_heading_text": "其他",
+                        "new_heading_level": parent_heading['level'] + 1
+                    }
 
-**{date_str} {title}**  
-{link_line}  
-{summary}
+        elif decision_action == "create_new_subheading":
+            parent_heading_text = (decision.parent_heading or "").strip()
+            if parent_heading_text in headings_map:
+                parent_heading = headings_map[parent_heading_text]
+                insertion_pos = self._find_end_of_section(parent_heading, doc_structure)
+                return {
+                    "action": "create_new_heading",
+                    "position": insertion_pos,
+                    "new_heading_text": (decision.new_heading_text or "新分类").strip(),
+                    "new_heading_level": parent_heading['level'] + 1
+                }
 
-## 元信息
+        # Fallback for any failed/missing heading cases, or for empty docs
+        logger.warning(f"LLM决策 '{decision.decision}' 的目标标题 '{decision.target_heading or decision.parent_heading}' 未找到，或出现其他回退情况。将在文档末尾创建新的一级标题。")
+        return {
+           "action": "create_new_heading",
+           "position": doc_end_pos,
+           "new_heading_text": (decision.new_heading_text or decision.thought[:30]).strip(),
+           "new_heading_level": 1
+        }
 
-- **分享者**: {source_user}
-- **来源群组**: {group_name}
-- **提取时间**: {extracted_at.strftime('%Y-%m-%d %H:%M')}
-
-## 上下文
-
-{context}
-
----
-
-*此笔记由 DailyBot 自动生成{' (从历史记录导入)' if is_history else ''}*
-"""
+    def _find_end_of_section(self, target_heading: Dict[str, Any], doc_structure: Dict[str, Any]) -> int:
+        """找到指定标题区域的末尾位置。"""
+        headings = doc_structure['headings']
+        target_level = target_heading['level']
         
-        return content
-    
-    def _extract_full_title(self, content: str, partial_title: str) -> Optional[str]:
-        """
-        从内容中提取完整标题
-        
-        Args:
-            content: 原始内容
-            partial_title: 部分标题
-            
-        Returns:
-            完整标题（如果找到）
-        """
-        # 移除...后缀
-        partial = partial_title.rstrip('.')
-        
-        # 在内容中查找包含部分标题的完整行
-        lines = content.split('\n')
-        for line in lines[:20]:  # 只在前20行查找
-            if partial in line and len(line) > len(partial_title):
-                # 清理并返回
-                full_title = line.strip()
-                # 移除常见的标题前缀
-                for prefix in ['Title:', 'title:', '标题：', '论文：']:
-                    if full_title.startswith(prefix):
-                        full_title = full_title[len(prefix):].strip()
-                return full_title
-        
-        return None
-    
-    def _extract_source_from_url(self, url: str) -> str:
-        """从URL提取来源名称"""
-        if 'mp.weixin.qq.com' in url:
-            return '微信公众号文章'
-        elif 'arxiv.org' in url:
-            return 'arXiv论文'
-        elif 'bilibili.com' in url or 'b23.tv' in url:
-            return 'B站视频'
-        elif 'github.com' in url:
-            return 'GitHub项目'
+        # 确定文档末尾的正确位置
+        if self.note_backend_name == 'google_docs':
+            doc_end_pos = max(1, doc_structure['end_of_document'] - 1)
         else:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            return parsed.netloc or '网页链接'
-    
-    async def _is_duplicate_content(self, url: str, title: str) -> bool:
-        """
-        检查是否是重复内容
-        
-        Args:
-            url: URL
-            title: 标题
-            
-        Returns:
-            是否重复
-        """
+            doc_end_pos = doc_structure['end_of_document']
+
         try:
-            # 生成内容指纹
-            content_hash = hashlib.md5(f"{url}:{title}".encode()).hexdigest()
-            
-            # 在知识库中搜索相同的URL或标题
-            for md_file in self.kb_folder.rglob("*.md"):
-                try:
-                    with open(md_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        
-                        # 检查URL
-                        if url and url in content:
-                            return True
-                        
-                        # 检查标题（忽略日期部分）
-                        title_pattern = re.escape(title)
-                        if re.search(title_pattern, content, re.IGNORECASE):
-                            return True
-                            
-                except Exception as e:
-                    logger.warning(f"检查重复内容时跳过文件 {md_file}: {e}")
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"检查重复内容时出错: {e}")
-            return False
-    
-    def _get_daily_note_path(self, date: Optional[datetime] = None) -> Path:
-        """
-        获取日记文件路径
-        
-        Args:
-            date: 日期，默认为今天
-            
-        Returns:
-            日记文件路径
-        """
-        if date is None:
-            date = datetime.now()
-        
-        filename = date.strftime("%Y-%m-%d.md")
-        return self.daily_notes_folder / filename
-    
-    def _get_kb_note_path(self, title: str, category: str) -> Path:
-        """
-        获取知识库笔记路径（用于旧的文件夹方式）
-        
-        Args:
-            title: 笔记标题
-            category: 分类
-            
-        Returns:
-            笔记路径
-        """
-        # 重新扫描分类，确保使用最新的分类结构
-        self._scan_categories()
-        
-        # 查找匹配的分类文件夹
-        category_folder = None
-        
-        # 首先尝试直接匹配
-        if category in self.categories:
-            category_folder = self.categories[category]
-        else:
-            # 尝试通过值匹配
-            for key, value in self.categories.items():
-                if value.lower() == category.lower():
-                    category_folder = value
-                    break
-        
-        # 如果还是没找到，使用默认分类
-        if not category_folder:
-            # 查找"其他"分类
-            for key, value in self.categories.items():
-                if 'other' in key or '其他' in value:
-                    category_folder = value
-                    break
-            
-            # 如果连"其他"都没有，创建一个
-            if not category_folder:
-                category_folder = '其他资料'
-                self.categories['others'] = category_folder
-        
-        category_path = self.kb_folder / category_folder
-        category_path.mkdir(exist_ok=True)
-        
-        # 清理标题作为文件名
-        filename = self._sanitize_filename(title) + ".md"
-        
-        return category_path / filename
-    
-    async def _save_note(self, path: Path, content: str, metadata: Dict[str, Any]):
-        """
-        保存笔记文件（用于旧的文件夹方式）
-        
-        Args:
-            path: 文件路径
-            content: 笔记内容
-            metadata: 元数据
-        """
-        # 如果文件已存在，可能需要更新而不是追加
-        if path.exists():
-            # 读取现有内容，检查是否真的是相同内容的更新
-            existing_content = path.read_text(encoding='utf-8')
-            
-            # 如果是完全相同的内容，跳过
-            if content.strip() == existing_content.strip():
-                logger.info(f"内容未变化，跳过更新: {path}")
-                return
-            
-            # 否则，替换内容（而不是追加）
-            logger.info(f"更新现有笔记: {path}")
-        
-        # 添加frontmatter
-        post = frontmatter.Post(content)
-        post.metadata.update({
-            'title': metadata.get('title'),
-            'url': metadata.get('url'),
-            'category': metadata.get('category'),
-            'created': metadata.get('extracted_at', datetime.now()).isoformat(),
-            'tags': metadata.get('tags', []),
-            'source_user': metadata.get('source_user', ''),
-            'group_name': metadata.get('group_name', ''),
-            'is_history': metadata.get('is_history', False)
-        })
-        
-        # 保存文件
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(frontmatter.dumps(post))
-    
-    async def _add_to_daily_note(self, title: str, kb_path: Optional[Path], 
-                               date: datetime, group_name: str = ''):
-        """
-        在日记中添加引用
-        
-        Args:
-            title: 内容标题
-            kb_path: 知识库笔记路径（如果有）
-            date: 日期
-            group_name: 群组名称
-        """
-        daily_path = self._get_daily_note_path(date)
-        
-        # 构建链接
-        if kb_path:
-            # 计算相对路径
-            try:
-                relative_path = os.path.relpath(kb_path, self.vault_path)
-                # 转换为Obsidian链接格式
-                link = f"[[{relative_path.replace('.md', '')}|{title}]]"
-            except:
-                link = f"[[{title}]]"
-        else:
-            # 如果没有路径，只用标题
-            link = f"[[{title}]]"
-        
-        # 构建条目
-        time_str = date.strftime('%H:%M')
-        group_info = f" (来自群组: {group_name})" if group_name else ""
-        entry = f"\n- {time_str} 提取内容: {link}{group_info}\n"
-        
-        # 读取或创建日记
-        if daily_path.exists():
-            content = daily_path.read_text(encoding='utf-8')
-        else:
-            content = f"# {date.strftime('%Y-%m-%d')} 日记\n\n## 提取的内容\n"
-        
-        # 添加条目
-        content += entry
-        
-        # 保存日记
-        with open(daily_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-    
-    async def search_notes(self, query: str, limit: int = 10, 
-                          group_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        搜索笔记
-        
-        Args:
-            query: 搜索查询
-            limit: 返回结果数量限制
-            group_filter: 群组过滤器
-            
-        Returns:
-            搜索结果列表
-        """
-        if self.note_backend == 'google_docs':
-            all_results = []
-            # 注意: Google Docs后端目前不支持按群组过滤
-            if group_filter:
-                logger.warning("Google Docs后端搜索尚不支持按群组过滤。")
+            start_index = headings.index(target_heading)
+            # 从目标标题之后开始寻找
+            for i in range(start_index + 1, len(headings)):
+                next_heading = headings[i]
+                if next_heading['level'] <= target_level:
+                    # 找到了下一个同级或更高级别的标题，在其开始处插入
+                    # 对于Google Docs，需要-1来插入到前一个段落的末尾
+                    return next_heading['startIndex'] - 1 if self.note_backend_name == 'google_docs' else next_heading['startIndex']
+            # 如果没找到，说明目标标题是文档最后一个区域
+            return doc_end_pos
+        except ValueError:
+            return doc_end_pos
 
-            for note_doc in self.note_files:
-                doc_id = note_doc.get('document_id')
-                if doc_id:
-                    try:
-                        results = await self.google_docs_manager.search_content(doc_id, query)
-                        # 为结果添加文档信息
-                        for res in results:
-                            res['document_name'] = note_doc.get('name')
-                            res['document_id'] = doc_id
-                        all_results.extend(results)
-                    except Exception as e:
-                        logger.error(f"搜索文档 {note_doc.get('name')} ({doc_id}) 时出错: {e}")
-
-            # 目前仅按找到的顺序返回，未来可以增加排序逻辑
-            return all_results[:limit]
+    def _find_subheading(self, parent_heading: Dict[str, Any], subheading_texts: List[str], doc_structure: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """在父标题下寻找特定的子标题。"""
+        headings = doc_structure['headings']
+        parent_level = parent_heading['level']
         
-        # Obsidian搜索逻辑
+        try:
+            parent_index = headings.index(parent_heading)
+            for i in range(parent_index + 1, len(headings)):
+                subsequent_heading = headings[i]
+                if subsequent_heading['level'] <= parent_level:
+                    break # 已离开子标题范围
+                if subsequent_heading['level'] == parent_level + 1 and subsequent_heading['text'].strip() in subheading_texts:
+                    return subsequent_heading
+            return None
+        except ValueError:
+            return None
+
+    def get_note_files_config(self) -> List[Dict[str, Any]]:
+        """返回当前后端的所有笔记文件配置。"""
+        return self.note_files_config
+
+    async def search_in_document(self, doc_config: Dict[str, Any], query: str, group_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        获取文档的纯文本内容，然后在其上执行通用的搜索和过滤逻辑。
+        """
+        if not self.backend_manager or not hasattr(self.backend_manager, 'get_document_text'):
+            logger.warning(f"后端 {self.note_backend_name} 不支持 'get_document_text' 方法。")
+            return []
+
+        # 1. 从后端获取纯文本
+        content = await self.backend_manager.get_document_text(doc_config)
+        if not content:
+            return []
+
+        # 2. 根据后端类型，应用不同的解析和搜索策略
+        if self.note_backend_name == 'obsidian':
+            return self._search_in_obsidian_content(content, query, group_filter)
+        elif self.note_backend_name == 'google_docs':
+            return self._search_in_gdocs_content(content, query, group_filter)
+        
+        return []
+
+    def _search_in_obsidian_content(self, content: str, query: str, group_filter: Optional[str]) -> List[Dict[str, Any]]:
+        """在Obsidian的Markdown内容中搜索笔记条目。"""
+        # 每个条目以加粗的日期标题开始
+        entries = re.split(r'\n(?=\*\*[0-9])', content)
         results = []
         query_lower = query.lower()
-        
-        # 搜索知识库中的所有笔记
-        for md_file in self.kb_folder.rglob("*.md"):
-            try:
-                # 读取文件内容
-                with open(md_file, 'r', encoding='utf-8') as f:
-                    post = frontmatter.load(f)
-                
-                # 群组过滤
-                if group_filter and post.metadata.get('group_name') != group_filter:
-                    continue
-                
-                # 搜索标题和内容
-                title = post.metadata.get('title', md_file.stem)
-                content = post.content
-                
-                if query_lower in title.lower() or query_lower in content.lower():
-                    results.append({
-                        'title': title,
-                        'path': str(md_file),
-                        'content': content[:500],  # 只返回前500字符
-                        'metadata': post.metadata,
-                        'score': self._calculate_relevance_score(query_lower, title, content)
-                    })
-                    
-            except Exception as e:
-                logger.warning(f"搜索笔记时跳过文件 {md_file}: {e}")
-        
-        # 按相关性排序
-        results.sort(key=lambda x: x['score'], reverse=True)
-        
-        return results[:limit]
-    
-    def _calculate_relevance_score(self, query: str, title: str, content: str) -> float:
-        """计算相关性分数"""
-        score = 0.0
-        
-        # 标题匹配权重更高
-        if query in title.lower():
-            score += 10.0
-        
-        # 内容匹配
-        score += content.lower().count(query)
-        
-        return score
-    
-    async def get_all_notes(self, category: Optional[str] = None, 
-                           group_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        获取所有笔记
-        
-        Args:
-            category: 分类筛选
-            group_filter: 群组筛选
+        metadata_pattern = re.compile(r'<!-- metadata: (.*) -->')
+
+        for entry in entries:
+            if not entry.strip() or query_lower not in entry.lower():
+                continue
+
+            metadata = {}
+            passes_filter = True
+            metadata_match = metadata_pattern.search(entry)
+            if metadata_match:
+                try:
+                    metadata = json.loads(metadata_match.group(1))
+                    if group_filter and metadata.get('group_name') != group_filter:
+                        passes_filter = False
+                except json.JSONDecodeError:
+                    pass # 忽略格式错误的元数据
             
-        Returns:
-            笔记列表
-        """
-        if self.note_backend == 'google_docs':
-            # Google Docs不支持获取所有笔记
-            return []
+            elif group_filter: # 需要过滤但没有元数据
+                passes_filter = False
+
+            if passes_filter:
+                title_match = re.search(r'\*\*(.*?)\*\*', entry)
+                title = title_match.group(1) if title_match else "无标题条目"
+                results.append({'title': title, 'text': entry.strip(), 'metadata': metadata})
         
-        notes = []
+        return results
+
+    def _search_in_gdocs_content(self, content: str, query: str, group_filter: Optional[str]) -> List[Dict[str, Any]]:
+        """在Google Docs的纯文本内容中搜索段落。"""
+        if group_filter:
+            logger.warning("Google Docs后端的搜索当前不支持按群组过滤。")
+
+        results = []
+        paragraphs = content.split('\n\n')
+        query_lower = query.lower()
         
-        # 重新扫描分类
-        self._scan_categories()
-        
-        # 确定搜索路径
-        if category and category in self.categories:
-            search_path = self.kb_folder / self.categories[category]
-        else:
-            search_path = self.kb_folder
-        
-        # 遍历所有笔记
-        for md_file in search_path.rglob("*.md"):
-            try:
-                with open(md_file, 'r', encoding='utf-8') as f:
-                    post = frontmatter.load(f)
-                
-                # 群组过滤
-                if group_filter and post.metadata.get('group_name') != group_filter:
-                    continue
-                
-                notes.append({
-                    'title': post.metadata.get('title', md_file.stem),
-                    'path': str(md_file),
-                    'metadata': post.metadata,
-                    'content': post.content
+        for i, paragraph in enumerate(paragraphs):
+            if query_lower in paragraph.lower():
+                # 尝试从段落中提取一个标题行
+                first_line = paragraph.split('\n', 1)[0]
+                results.append({
+                    'text': paragraph[:500] + ('...' if len(paragraph) > 500 else ''),
+                    'title': first_line if len(first_line) < 100 else '相关段落',
+                    'position': i
                 })
-                
-            except Exception as e:
-                logger.warning(f"读取笔记时跳过文件 {md_file}: {e}")
         
-        return notes 
+        return results
+
+    async def _check_for_duplicates(self, content_data: Dict[str, Any]) -> bool:
+        """遍历所有已配置的笔记文件，检查是否存在重复内容。"""
+        logger.debug("开始全局查重...")
+        for file_config in self.note_files_config:
+            is_dup = await self.backend_manager.is_duplicate_in_document(file_config, content_data)
+            if is_dup:
+                return True
+        logger.debug("全局查重完成，未发现重复内容。")
+        return False 

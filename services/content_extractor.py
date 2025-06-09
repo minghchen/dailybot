@@ -73,16 +73,6 @@ class ContentExtractor:
             
         return unique_links
 
-    def _classify_link(self, url: str) -> str:
-        """根据URL分类链接类型"""
-        if "mp.weixin.qq.com" in url:
-            return "wechat_article"
-        if "bilibili.com" in url or "b23.tv" in url:
-            return "bilibili_video"
-        if "arxiv.org" in url:
-            return "arxiv_paper"
-        return "web_link"
-
     async def _fetch_content_with_reader(self, url: str) -> Optional[Dict[str, Any]]:
         """
         使用Jina AI Reader提取任何URL的内容。
@@ -205,10 +195,10 @@ class ContentExtractor:
         prompt = f"""你是一个对话摘要专家。下面是一些原始的聊天记录片段，其中可能包含复杂的XML格式。
 你的任务是：
 1. 阅读并理解这些聊天记录。
-2. 将它们转换成一段流畅、自然的对话摘要，格式为："A说... B回复说... C评论道..."。
-3. 忽略无关的XML标签，只提取关键的人物和对话内容。
-4. 如果内容是引用，请表述为"A引用B的话说..."。
-5. 保持摘要的简洁和中立。
+2. 将它们转换成一段格式化的文本摘要，格式为："A说:...; B说:...; C说:..."。
+3. 不要对对话内容做任何简化，保持原始对话的完整性。
+4. 忽略无关的XML标签，只提取关键的人物和对话内容。
+5. 如果内容含有引用，请表述为"A引用B的话说:..."。
 
 [原始聊天记录]
 {full_raw_context}

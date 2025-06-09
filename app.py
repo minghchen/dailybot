@@ -77,13 +77,13 @@ class DailyBot:
             if note_backend == 'google_docs':
                 # 检查Google Docs配置
                 google_config = self.config.get('google_docs', {})
-                note_docs = google_config.get('note_documents', [])
-                if not note_docs:
-                    logger.error("使用Google Docs后端时，请在config.json的'google_docs'中配置'note_documents'")
+                note_files = google_config.get('note_files', [])
+                if not note_files:
+                    logger.error("使用Google Docs后端时，请在config.json的'google_docs'中配置'note_files'")
                     sys.exit(1)
                 
                 # 检查每个文档是否都有ID
-                for doc in note_docs:
+                for doc in note_files:
                     if not doc.get('document_id') or doc.get('document_id') == 'YOUR_DOC_ID':
                         logger.error(f"Google Docs中的笔记 '{doc.get('name', '未命名')}' 未配置有效的 document_id")
                         sys.exit(1)

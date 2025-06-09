@@ -101,23 +101,24 @@ class ConfigLoader:
             'openai': ['api_key'],
         }
         
-        # 根据笔记后端检查特定字段
-        note_backend = config.get('note_backend', 'obsidian')
+        # 根据后端选择，添加特定的必填字段
+        note_backend = config.get('note_backend')
         if note_backend == 'obsidian':
-            required_fields['obsidian'] = ['vault_path']
+            required_fields['obsidian'] = ['vault_path', 'note_files']
         elif note_backend == 'google_docs':
-            required_fields['google_docs'] = ['credentials_file', 'note_documents']
+            required_fields['google_docs'] = ['credentials_file', 'note_files']
 
-        for section, fields in required_fields.items():
-            if section not in config:
-                raise ValueError(f"配置缺少必要部分: {section}")
+        # 检查所有必需的字段
+        for main_key, sub_keys in required_fields.items():
+            if main_key not in config:
+                raise ValueError(f"配置缺少必要部分: {main_key}")
             
-            for field in fields:
-                if field not in config[section] or not config[section][field]:
-                    raise ValueError(f"配置缺少必要字段: {section}.{field}")
+            for field in sub_keys:
+                if field not in config[main_key] or not config[main_key][field]:
+                    raise ValueError(f"配置缺少必要字段: {main_key}.{field}")
                 
                 # 检查API Key是否为占位符
-                if field == 'api_key' and config[section][field] in ['YOUR_OPENAI_API_KEY', 'your_openai_api_key_here']:
+                if field == 'api_key' and config[main_key][field] in ['YOUR_OPENAI_API_KEY', 'your_openai_api_key_here']:
                     raise ValueError("请在配置文件或环境变量中设置有效的 OpenAI API Key")
     
     @staticmethod
