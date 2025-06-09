@@ -292,6 +292,10 @@ python app.py
       }
     ]
   },
+
+  "proxy": {
+    "https": "http://127.0.0.1:7890"  // 网络代理
+  },
   
   "google_docs": {
     "credentials_file": "config/google_credentials.json",

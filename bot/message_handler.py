@@ -69,6 +69,16 @@ class MessageHandler:
         # 记录已处理历史消息的群组，防止重复处理
         self.processed_history_groups = set()
     
+    async def handle(self, context: Context) -> Optional[Reply]:
+        """消息处理总入口"""
+        if context.type == "TEXT":
+            return await self.handle_text_message(context)
+        elif context.type == "SHARING":
+            return await self.handle_sharing_message(context)
+        else:
+            logger.debug(f"收到不支持的消息类型，已跳过: {context.type}")
+            return None
+
     def set_channel(self, channel: Any):
         """设置消息通道实例，并完成依赖注入"""
         self.channel = channel
@@ -94,24 +104,32 @@ class MessageHandler:
     
     def contains_link(self, text: str) -> bool:
         """
-        检测文本中是否包含链接
+        检测文本中是否包含链接，能够解析微信消息中的XML内容。
         
         Args:
-            text: 文本内容
+            text: 文本内容，可能为纯文本或XML格式字符串
             
         Returns:
             是否包含链接
         """
-        # URL正则表达式
-        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-        # 微信公众号链接
-        mp_pattern = r'mp\.weixin\.qq\.com'
-        # B站链接
-        bilibili_pattern = r'bilibili\.com|b23\.tv'
+        if not text:
+            return False
+
+        # 1. 移除引用消息，避免重复处理或错误解析
+        text_no_refer = re.sub(r'<refermsg>.*?</refermsg>', '', text, flags=re.DOTALL)
         
-        return bool(re.search(url_pattern, text) or 
-                   re.search(mp_pattern, text) or
-                   re.search(bilibili_pattern, text))
+        # 2. 检查XML中的常见链接标签
+        # 匹配 <url>...</url> 或 <title>...</title> 中包含的链接
+        xml_link_pattern = r'<(?:url|title)>(?:<!\[CDATA\[)?(https?://\S+)(?:\]\]>)?</(?:url|title)>'
+        if re.search(xml_link_pattern, text_no_refer):
+            return True
+            
+        # 3. 检查纯文本中的链接
+        plain_link_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        if re.search(plain_link_pattern, text_no_refer):
+            return True
+
+        return False
     
     def save_message_from_context(self, context: Context):
         """
@@ -168,20 +186,31 @@ class MessageHandler:
             logger.error(f"处理文本消息时出错: {e}", exc_info=True)
             return Reply(ReplyType.ERROR, "抱歉，处理您的消息时出现了错误。")
 
+    async def _handle_text_link_message(self, context: Context):
+        """专门处理白名单群聊中的纯文本链接"""
+        if not context.is_group or not self._is_in_whitelist(context):
+            return
+        
+        if self.contains_link(context.content):
+            logger.debug(f"在群聊 '{context.group_name}' 中发现纯文本链接，触发内容提取。")
+            # 历史消息在这里被处理，直接提取内容，无需保存
+            if not context.kwargs.get('is_historical'):
+                self.save_message_from_context(context)
+            await self._extract_content(context)
+
     async def _handle_group_message(self, context: Context) -> Optional[Reply]:
-        """处理群聊消息"""
-        # 3. 检查白名单
+        """处理群聊消息 - 仅负责聊天回复"""
+        # 1. 检查白名单
         if not self._is_in_whitelist(context):
             return None
 
-        # 4. 检查是否被@
-        if not self.config.get('bot_name') in context.content:
-            return None
+        # 2. 聊天回复逻辑 (需要@机器人)
+        if self.config.get('bot_name') in context.content:
+            logger.debug(f"在群聊 '{context.group_name}' 中被@，进入聊天回复逻辑。")
+            reply_text = await self._generate_reply(context)
+            if reply_text:
+                return Reply(ReplyType.TEXT, reply_text)
         
-        # 5. 生成回复 (RAG或直接LLM)
-        reply_text = await self._generate_reply(context)
-        if reply_text:
-            return Reply(ReplyType.TEXT, reply_text)
         return None
 
     async def _handle_single_message(self, context: Context) -> Optional[Reply]:
@@ -217,13 +246,19 @@ class MessageHandler:
             context = Context(**context)
 
         try:
-            # 保存消息
-            self.save_message_from_context(context)
+            # 历史消息在此处被处理，在下游的 _extract_content 中再进行判断和保存
+            # 此处不再重复保存，避免因上下文不完整导致错误
+            if not context.kwargs.get('is_historical'):
+                self.save_message_from_context(context)
             
+            # 检查白名单
+            if context.is_group and not self._is_in_whitelist(context):
+                return None
+
             extraction_config = self.config.get('content_extraction', {})
             # 自动提取分享内容
             if extraction_config.get('auto_extract_enabled'):
-                asyncio.create_task(self._extract_content(context))
+                await self._extract_content(context)
                 
                 # 如果是静默模式，不回复
                 if extraction_config.get('silent_mode', True):
@@ -244,6 +279,7 @@ class MessageHandler:
         Args:
             context: 消息上下文
         """
+        logger.info(f"--- 开始内容提取流程 (群聊: {context.group_name}) ---")
         try:
             # 获取上下文消息
             extraction_config = self.config.get('content_extraction', {})
@@ -268,20 +304,26 @@ class MessageHandler:
                 context_messages
             )
             
-            if extracted_content:
-                # 添加群组信息
-                extracted_content['group_name'] = context.group_name if context.is_group else ''
-                
-                # 保存到笔记
-                await self.note_manager.save_content(extracted_content)
-                logger.info(f"内容已提取并保存: {extracted_content['title']}")
-                
-                # 如果配置了RAG，更新向量数据库
-                if self.rag_service:
-                    await self.rag_service.add_document(extracted_content)
+            if not extracted_content:
+                logger.info("内容提取器未能从消息中提取到有效内容。")
+                return # 提取失败，直接返回
+
+            # 添加群组信息
+            extracted_content['group_name'] = context.group_name if context.is_group else ''
+            
+            # 保存到笔记
+            logger.info("内容提取成功，准备保存到笔记...")
+            await self.note_manager.save_content(extracted_content)
+            
+            # 如果配置了RAG，更新向量数据库
+            if self.rag_service:
+                await self.rag_service.add_document(extracted_content)
+
+            # 只有在所有步骤都成功后才记录成功日志
+            logger.info(f"--- 内容提取与保存流程全部成功: {extracted_content.get('title', '未知标题')} ---")
                     
         except Exception as e:
-            logger.error(f"提取内容时出错: {e}", exc_info=True)
+            logger.error(f"在 _extract_content 执行期间发生致命错误: {e}", exc_info=True)
     
     def _get_context_messages(self, target_time: int, window_seconds: int = 60,
                             group_name: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -355,6 +397,9 @@ class MessageHandler:
                 group_id = all_group_names[group_name]
                 logger.info(f"✅ 找到白名单群组: '{group_name}' (ID: {group_id})")
                 
+                # 动态地将解析出的ID添加到ID白名单中，以便后续检查
+                self.group_id_white_list.add(group_id)
+                
                 # 获取待处理消息数量
                 new_messages_count = await self.history_processor.get_new_history_count_by_id(group_id)
                 logger.info(f"   -> 发现 {new_messages_count} 条新的历史消息待处理。")
@@ -380,8 +425,9 @@ class MessageHandler:
         if context.room_id in self.group_id_white_list:
             return True
         if context.group_name in self.group_name_white_list:
-            # 如果名字匹配，但ID不在，提醒用户更新
-            logger.warning(f"群组 '{context.group_name}' 通过名称匹配，建议在群内使用 #here 指令更新为ID匹配，以提高可靠性。")
+            # 只有在ID列表为空，且名字匹配时才警告，避免历史消息处理时出现
+            if not self.group_id_white_list:
+                 logger.warning(f"群组 '{context.group_name}' 通过名称匹配，建议在群内使用 #here 指令更新为ID匹配，以提高可靠性。")
             return True
         return False
 

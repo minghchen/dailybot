@@ -13,6 +13,8 @@ from loguru import logger
 from pathlib import Path
 import json
 
+from channel.channel import Context
+
 class HistoryProcessor:
     """历史消息处理器"""
 
@@ -168,9 +170,18 @@ class HistoryProcessor:
             logger.error(f"从数据库获取群组 '{group_id}' 历史消息失败: {e}", exc_info=True)
             return []
 
+    def _map_msg_type_to_context(self, msg_type: int) -> str:
+        """将Mac微信的消息类型码映射到统一的Context类型"""
+        if msg_type == 1:
+            return "TEXT"
+        if msg_type == 49:
+            return "SHARING"
+        # 更多映射...
+        return "UNKNOWN"
+
     async def _process_formatted_message_batch(self, messages: List[Dict[str, Any]], group_name: str) -> int:
         """
-        处理已经格式化好的消息批次 (主要用于Mac微信历史记录)
+        处理已经格式化好的消息批次，为每条消息构建完整的Context，并精确分发。
         """
         if not self.message_handler:
             logger.error("Message Handler 未注入，无法处理历史消息。")
@@ -179,23 +190,30 @@ class HistoryProcessor:
         processed_count = 0
         for msg in messages:
             try:
-                # 检查消息内容是否包含链接
                 content = msg.get('content', '')
                 if not self.message_handler.contains_link(content):
                     continue
-
-                # 构造Context对象
-                context = {
-                    "channel": "mac_wechat_history",
-                    "msg": msg,
-                    "session_id": msg.get("room_id", group_name)
-                }
-
-                # 使用消息处理器的统一方法处理
-                reply = await self.message_handler.handle_sharing_message(context)
                 
-                if reply:
+                msg_type_code = msg.get('type')
+                
+                # 只处理包含链接的文本或分享卡片消息
+                if msg_type_code == 1: # 纯文本链接
+                    context = Context(type="TEXT", is_group=True, content=content,
+                                      user_id=msg.get('sender_id', 'unknown'),
+                                      nick_name=msg.get('from_user_name', '未知'),
+                                      room_id=msg.get('room_id'), group_name=group_name, msg=msg,
+                                      is_historical=True)
+                    await self.message_handler._handle_text_link_message(context)
                     processed_count += 1
+                elif msg_type_code == 49: # 分享卡片
+                    context = Context(type="SHARING", is_group=True, content=content,
+                                      user_id=msg.get('sender_id', 'unknown'),
+                                      nick_name=msg.get('from_user_name', '未知'),
+                                      room_id=msg.get('room_id'), group_name=group_name, msg=msg,
+                                      is_historical=True)
+                    await self.message_handler.handle_sharing_message(context)
+                    processed_count += 1
+
             except Exception as e:
                 logger.error(f"处理来自 '{group_name}' 的历史消息时出错: {e}", exc_info=True)
                 continue

@@ -13,98 +13,118 @@ from loguru import logger
 import requests
 from bs4 import BeautifulSoup
 import aiohttp
+from playwright.async_api import async_playwright
 
-from utils.link_parser import LinkParser
 from utils.video_summarizer import BilibiliSummarizer
 
 
 class ContentExtractor:
-    """内容提取器"""
-    
+    """内容提取器，统一使用Jina AI Reader进行内容提取"""
+
     def __init__(self, config: Dict[str, Any], llm_service):
         """
         初始化内容提取器
         
         Args:
-            config: 配置信息
+            config: 内容提取部分的配置
             llm_service: LLM服务实例
         """
         self.config = config
-        self.extraction_config = self.config.get('content_extraction', {})
+        self.extraction_config = config
         self.llm_service = llm_service
-        
-        # 链接解析器
-        self.link_parser = LinkParser()
-        
-        # B站视频总结器
-        self.bilibili_summarizer = BilibiliSummarizer(config.get('bilibili', {}))
-        
-        # 提取类型映射
-        self.extractors = {
-            'wechat_article': self._extract_wechat_article,
-            'bilibili_video': self._extract_bilibili_video,
-            'arxiv_paper': self._extract_arxiv_paper,
-            'web_link': self._extract_web_content
-        }
-        
-        logger.info("内容提取器初始化成功")
-    
+        self.reader_base_url = "https://r.jina.ai/"
+        logger.info("内容提取器初始化成功，将使用Jina AI Reader。")
+
     def set_message_handler(self, handler: Any):
-        """注入消息处理器实例，以备回调使用"""
+        """注入消息处理器实例"""
         self.message_handler = handler
-    
-    async def extract(self, msg: Dict[str, Any], context_messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+
+    def _parse_links_from_xml(self, xml_string: str) -> List[str]:
         """
-        提取消息中的内容
+        从消息的XML内容中健壮地提取所有链接。
+        """
+        if not xml_string:
+            return []
+
+        # 1. 移除引用消息，避免重复处理
+        text_no_refer = re.sub(r'<refermsg>.*?</refermsg>', '', xml_string, flags=re.DOTALL)
+
+        # 2. 统一匹配所有 http/https 链接，无论是在标签内还是纯文本
+        # 这个正则表达式会匹配:
+        # - <url>https://...</url>
+        # - <title>some text https://... some text</title>
+        # - >https://...< (纯文本链接)
+        # - CDATA中的链接
+        link_pattern = re.compile(r'https?://[a-zA-Z0-9./?=&-_%~@#*+]+')
         
-        Args:
-            msg: 消息对象
-            context_messages: 上下文消息列表
-            
-        Returns:
-            提取的内容数据
-        """
+        links = link_pattern.findall(text_no_refer)
+        
+        # 去重并保持顺序
+        unique_links = list(dict.fromkeys(links))
+        
+        logger.info(f"从消息内容中解析出 {len(unique_links)} 个链接: {unique_links}")
+        return unique_links
+
+    def _classify_link(self, url: str) -> str:
+        """根据URL分类链接类型"""
+        if "mp.weixin.qq.com" in url:
+            return "wechat_article"
+        if "bilibili.com" in url or "b23.tv" in url:
+            return "bilibili_video"
+        if "arxiv.org" in url:
+            return "arxiv_paper"
+        return "web_link"
+
+    async def _fetch_content_with_reader(self, url: str) -> Optional[Dict[str, Any]]:
+        """使用Jina AI Reader提取任何URL的内容"""
+        reader_url = f"{self.reader_base_url}{url}"
+        logger.info(f"正在通过Jina Reader提取内容: {reader_url}")
         try:
-            # 解析链接
-            links = self.link_parser.parse_message(msg)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(reader_url, timeout=120) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        # Jina Reader返回的内容是Markdown格式，标题通常是第一行
+                        lines = content.split('\n')
+                        title = lines[0].strip('# ').strip() if lines else url
+                        return {'title': title, 'content': content}
+                    else:
+                        logger.error(f"Jina Reader请求失败，状态码: {response.status}, URL: {reader_url}")
+                        return None
+        except asyncio.TimeoutError:
+            logger.error(f"Jina Reader请求超时: {reader_url}")
+            return None
+        except Exception as e:
+            logger.error(f"通过Jina Reader提取内容时发生未知错误: {e}", exc_info=True)
+            return None
+
+    async def extract(self, msg: Dict[str, Any], context_messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """统一提取消息中的链接内容"""
+        try:
+            links = self._parse_links_from_xml(msg.get('Text', ''))
             if not links:
                 return None
             
-            # 获取第一个链接（后续可以支持多链接）
-            link_info = links[0]
-            link_type = link_info['type']
-            url = link_info['url']
-            
-            # 检查是否支持该类型
-            if link_type not in self.extraction_config['extract_types']:
-                logger.info(f"跳过不支持的链接类型: {link_type}")
-                return None
-            
-            # 提取内容
-            if link_type in self.extractors:
-                content_info = await self.extractors[link_type](url)
-            else:
-                content_info = await self._extract_web_content(url)
-            
+            url = links[0]
+            logger.info(f"开始使用Jina Reader处理链接: {url}")
+
+            content_info = await self._fetch_content_with_reader(url)
             if not content_info:
+                logger.warning(f"未能从 {url} 提取到任何内容。")
                 return None
             
-            # 构建上下文
+            logger.info(f"成功从 {url} 提取到内容，标题: '{content_info.get('title', '')}'")
+
             context = self._build_context(msg, context_messages)
             
-            # 使用LLM总结内容，但要求精炼（1-5句话）
-            summary_prompt = f"""请用1-5句话总结以下内容的核心要点，要求：
-1. 提取最重要的观点或发现
-2. 保持客观准确
-3. 语言精炼，每句话都有信息量
-4. 如果是技术内容，突出技术创新点
+            # 由于Jina Reader已经对内容进行了很好的格式化，我们可以直接使用，或者进行更精简的总结
+            summary_prompt = f"""请将以下已经由Jina Reader预处理过的内容，进一步总结为一段不超过200字的精炼摘要，保留最重要的信息和核心观点。
 
-内容：
-{content_info['content'][:3000]}"""
+预处理后的内容：
+{content_info['content'][:4000]}"""
             
             summary = await self.llm_service.chat(summary_prompt)
             
-            # 使用LLM进行智能分类
             categories = ['theory', 'application', 'technology', 'industry', 'others']
             category_prompt = f"""请对以下内容进行分类，选择最合适的一个类别：
 - theory: 理论研究、学术论文、基础研究
@@ -123,18 +143,15 @@ class ContentExtractor:
             if category not in categories:
                 category = 'others'
             
-            # 构建返回数据
             result = {
-                'title': content_info.get('title', link_info.get('title', '未知标题')),
-                'article_title': content_info.get('article_title', ''),  # 公众号文章标题
+                'title': content_info.get('title', url),
                 'url': url,
-                'type': link_type,
                 'summary': summary,
                 'category': category,
                 'context': context,
                 'raw_content': content_info['content'],
                 'extracted_at': datetime.now(),
-                'source_user': msg['User']['NickName']
+                'source_user': msg.get('User', {}).get('NickName', '未知')
             }
             
             return result
@@ -142,7 +159,7 @@ class ContentExtractor:
         except Exception as e:
             logger.error(f"提取内容时出错: {e}", exc_info=True)
             return None
-    
+
     def _build_context(self, msg: Dict[str, Any], context_messages: List[Dict[str, Any]]) -> str:
         """构建上下文信息"""
         context_parts = []
@@ -163,199 +180,4 @@ class ContentExtractor:
                 ctx_text = ctx_msg['Text']
                 context_parts.append(f"- {ctx_sender}: {ctx_text}")
         
-        return "\n".join(context_parts)
-    
-    async def _extract_wechat_article(self, url: str) -> Optional[Dict[str, Any]]:
-        """提取微信公众号文章内容"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    html = await response.text()
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # 提取文章标题（这是公众号文章的标题）
-            article_title = ''
-            title_elem = soup.find('h1', class_='rich_media_title')
-            if title_elem:
-                article_title = title_elem.text.strip()
-            
-            # 提取内容标题（尝试从文章中提取论文或主题标题）
-            content_title = article_title  # 默认使用文章标题
-            
-            # 提取作者
-            author = ''
-            author_elem = soup.find('span', class_='rich_media_meta_text')
-            if author_elem:
-                author = author_elem.text.strip()
-            
-            # 提取正文
-            content_div = soup.find('div', id='js_content')
-            content = ''
-            if content_div:
-                # 移除脚本和样式
-                for script in content_div(['script', 'style']):
-                    script.decompose()
-                
-                # 获取文本内容
-                content = content_div.get_text(separator='\n', strip=True)
-                
-                # 尝试从正文中提取论文标题
-                # 查找常见的论文标题模式
-                paper_patterns = [
-                    r'《([^》]+)》',  # 中文书名号
-                    r'"([^"]+)"',     # 英文引号
-                    r'「([^」]+)」',  # 日文引号
-                    r'Title:\s*(.+)', # Title: 格式
-                    r'论文.*?[：:]\s*(.+)', # 论文：格式
-                ]
-                
-                for pattern in paper_patterns:
-                    match = re.search(pattern, content[:1000])  # 只在前1000字符中查找
-                    if match:
-                        potential_title = match.group(1).strip()
-                        # 验证是否像是论文标题（长度合适，包含关键词等）
-                        if 10 < len(potential_title) < 200:
-                            content_title = potential_title
-                            break
-            
-            # 组合内容
-            full_content = f"作者: {author}\n\n{content}" if author else content
-            
-            return {
-                'title': content_title,  # 内容的主标题（论文名等）
-                'article_title': article_title,  # 公众号文章标题
-                'content': full_content,
-                'author': author
-            }
-            
-        except Exception as e:
-            logger.error(f"提取微信公众号文章失败: {e}")
-            return None
-    
-    async def _extract_bilibili_video(self, url: str) -> Optional[Dict[str, Any]]:
-        """提取B站视频内容"""
-        try:
-            # 使用B站视频总结工具
-            video_info = await self.bilibili_summarizer.get_video_info(url)
-            
-            if not video_info:
-                return None
-            
-            # 构建内容
-            content = f"""UP主: {video_info.get('author', '')}
-时长: {video_info.get('duration', '')}
-播放量: {video_info.get('views', '')}
-
-简介:
-{video_info.get('description', '')}
-
-字幕/弹幕摘要:
-{video_info.get('transcript', '(暂无字幕信息)')}
-"""
-            
-            return {
-                'title': video_info.get('title', ''),
-                'article_title': '',  # 视频没有额外的文章标题
-                'content': content
-            }
-            
-        except Exception as e:
-            logger.error(f"提取B站视频内容失败: {e}")
-            return None
-    
-    async def _extract_arxiv_paper(self, url: str) -> Optional[Dict[str, Any]]:
-        """提取arXiv论文内容"""
-        try:
-            # 从URL提取论文ID
-            arxiv_id_match = re.search(r'arxiv\.org/(?:abs|pdf)/(\d+\.\d+)', url)
-            if not arxiv_id_match:
-                return None
-            
-            arxiv_id = arxiv_id_match.group(1)
-            
-            # 获取论文元数据
-            api_url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_url) as response:
-                    xml_data = await response.text()
-            
-            # 解析XML
-            soup = BeautifulSoup(xml_data, 'xml')
-            entry = soup.find('entry')
-            
-            if not entry:
-                return None
-            
-            # 提取信息
-            title = entry.find('title').text.strip()
-            authors = [author.find('name').text for author in entry.find_all('author')]
-            summary = entry.find('summary').text.strip()
-            published = entry.find('published').text[:10]  # 只取日期部分
-            
-            # 构建内容
-            content = f"""作者: {', '.join(authors)}
-发布日期: {published}
-
-摘要:
-{summary}
-"""
-            
-            return {
-                'title': title,  # 论文标题
-                'article_title': '',  # arXiv没有额外的文章标题
-                'content': content
-            }
-            
-        except Exception as e:
-            logger.error(f"提取arXiv论文失败: {e}")
-            return None
-    
-    async def _extract_web_content(self, url: str) -> Optional[Dict[str, Any]]:
-        """提取通用网页内容"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=30) as response:
-                    html = await response.text()
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # 移除脚本和样式
-            for script in soup(['script', 'style']):
-                script.decompose()
-            
-            # 尝试提取标题
-            title = ''
-            title_elem = soup.find('title')
-            if title_elem:
-                title = title_elem.text.strip()
-            
-            # 尝试提取主要内容
-            # 优先查找article标签
-            article = soup.find('article')
-            if article:
-                content = article.get_text(separator='\n', strip=True)
-            else:
-                # 查找main标签
-                main = soup.find('main')
-                if main:
-                    content = main.get_text(separator='\n', strip=True)
-                else:
-                    # 获取body内容
-                    body = soup.find('body')
-                    content = body.get_text(separator='\n', strip=True) if body else ''
-            
-            # 限制内容长度
-            if len(content) > 5000:
-                content = content[:5000] + '\n...(内容过长，已截断)'
-            
-            return {
-                'title': title,
-                'article_title': '',
-                'content': content
-            }
-            
-        except Exception as e:
-            logger.error(f"提取网页内容失败: {e}")
-            return None 
+        return "\n".join(context_parts) 

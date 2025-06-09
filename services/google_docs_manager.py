@@ -83,27 +83,31 @@ class GoogleDocsManager:
             document_id: 要保存到的文档ID
             content_data: 内容数据
         """
+        logger.info(f"GoogleDocsManager 开始处理保存任务，目标文档ID: {document_id}")
         try:
             # 格式化内容
             formatted_content = self._format_content(content_data)
+            logger.debug(f"格式化后的内容:\n{formatted_content}")
             
             # 获取文档结构
             document = await self.get_document_content(document_id)
             if not document:
-                logger.error(f"无法获取文档内容: {document_id}")
+                logger.error(f"无法获取文档内容: {document_id}，保存中断。")
                 return
             
+            # 检查是否有重复内容
+            if await self._check_duplicate(document, content_data):
+                logger.info(f"内容已存在于文档 {document_id}，跳过: '{content_data.get('title')}'")
+                return
+            logger.debug("内容未重复，继续执行保存。")
+
             # 分析文档结构，找到合适的插入位置
             insert_position, category_exists = await self._find_insert_position(
                 document, 
                 content_data.get('category', 'others'),
                 content_data.get('title', '')
             )
-            
-            # 检查是否有重复内容
-            if await self._check_duplicate(document, content_data):
-                logger.info(f"内容已存在于文档 {document_id}，跳过: {content_data.get('title')}")
-                return
+            logger.info(f"计算出的插入位置: {insert_position}, 类别 '{self.categories.get(content_data.get('category', 'others'))}' 是否已存在: {category_exists}")
             
             # 构建请求
             requests = []
@@ -136,12 +140,13 @@ class GoogleDocsManager:
             ))
             
             # 执行批量更新
+            logger.info(f"准备执行 {len(requests)} 个API请求来更新文档...")
             result = self.service.documents().batchUpdate(
                 documentId=document_id,
                 body={'requests': requests}
             ).execute()
             
-            logger.info(f"内容已保存到Google Docs ({document_id}): {content_data.get('title')}")
+            logger.info(f"Google Docs API调用成功，内容已保存: '{content_data.get('title')}'")
             
         except Exception as e:
             logger.error(f"保存内容到Google Docs ({document_id})失败: {e}", exc_info=True)
@@ -272,10 +277,11 @@ class GoogleDocsManager:
             if 'paragraph' in element:
                 paragraph = element['paragraph']
                 text_content = self._extract_text_from_paragraph(paragraph)
+                is_heading_style = paragraph.get('paragraphStyle', {}).get('namedStyleType') == 'HEADING_2'
                 
-                # 检查是否是二级标题（类别）
-                if text_content.startswith('## '):
-                    section_title = text_content[3:].strip()
+                # 检查是否是二级标题（通过样式或Markdown标记）
+                if is_heading_style or text_content.startswith('## '):
+                    section_title = text_content[3:].strip() if text_content.startswith('## ') else text_content
                     if section_title == category_name:
                         category_start = current_pos
                     elif category_start is not None and next_category_start is None:

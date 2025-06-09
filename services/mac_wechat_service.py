@@ -248,16 +248,15 @@ class MacWeChatService:
         for db_manager in self.msg_db_managers:
              # 直接查询已知的表
             rows = db_manager.execute_query(
-                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
+                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource, messageType FROM {table_name} WHERE msgCreateTime > ?",
                 (start_timestamp,)
             )
             if not rows: continue
 
             for row in rows:
-                sender = None
-                content = row[2]
-                if row[3] == 0 and content and ":\n" in content:
-                    parts = content.split(":\n", 1)
+                sender, content = None, row[2]
+                if row[3] == 0 and content and ":\\n" in content:
+                    parts = content.split(":\\n", 1)
                     if len(parts) == 2 and parts[0].startswith("wxid_"):
                         sender, content = parts
                 
@@ -267,6 +266,7 @@ class MacWeChatService:
                     "msg_id": row[0], "create_time": row[1], "content": content,
                     "sender_id": sender, "from_user_name": sender_name, 
                     "room_id": chatroom_id, "is_group": True,
+                    "type": row[5],
                     "raw": {"MsgSource": row[4]}
                 })
 
@@ -283,16 +283,17 @@ class MacWeChatService:
         table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
         
         for db_manager in self.msg_db_managers:
+             # 直接查询已知的表
             rows = db_manager.execute_query(
-                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
+                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource, messageType FROM {table_name} WHERE msgCreateTime > ?",
                 (start_timestamp,)
             )
             if not rows: continue
 
             for row in rows:
                 sender, content = None, row[2]
-                if row[3] == 0 and content and ":\n" in content:
-                    parts = content.split(":\n", 1)
+                if row[3] == 0 and content and ":\\n" in content:
+                    parts = content.split(":\\n", 1)
                     if len(parts) == 2 and parts[0].startswith("wxid_"):
                         sender, content = parts
                 
@@ -302,6 +303,7 @@ class MacWeChatService:
                     "msg_id": row[0], "create_time": row[1], "content": content,
                     "sender_id": sender, "from_user_name": sender_name, 
                     "room_id": chatroom_id, "is_group": True,
+                    "type": row[5],
                     "raw": {"MsgSource": row[4]}
                 })
 
@@ -493,7 +495,7 @@ class MacWeChatService:
                         if match:
                             group_id = match.group(1)
                             if group_id in group_ids and group_id not in self._group_id_to_table_map:
-                                logger.info(f"配对成功: {group_id} -> {table_name}")
+                                logger.debug(f"配对成功: {group_id} -> {table_name}")
                                 self._group_id_to_table_map[group_id] = table_name
                                 break
                 except Exception:

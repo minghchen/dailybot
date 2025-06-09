@@ -73,6 +73,24 @@ class ConfigLoader:
         if base_url:
             config['openai']['base_url'] = base_url
             logger.info("从环境变量加载 OpenAI Base URL")
+        
+        # --- 代理配置加载 ---
+        # 优先从 config.json 的 'proxy' 部分加载
+        proxy_config = config.get('proxy', {})
+        https_proxy_from_config = proxy_config.get('https')
+
+        # 如果配置文件中没有，则尝试从环境变量加载
+        https_proxy_from_env = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+
+        # 确定最终使用的代理
+        final_https_proxy = https_proxy_from_config or https_proxy_from_env
+
+        if final_https_proxy:
+            source = "配置文件(config.json)" if https_proxy_from_config else "环境变量"
+            logger.info(f"从 {source} 加载了 HTTPS 代理: {final_https_proxy}")
+            # 确保代理设置能被google-api-python-client等库识别
+            os.environ['HTTPS_PROXY'] = final_https_proxy
+            os.environ['https_proxy'] = final_https_proxy # 兼容某些库的大小写需求
     
     @staticmethod
     def _validate_config(config: Dict[str, Any]):
@@ -128,9 +146,12 @@ class ConfigLoader:
         openai_defaults = {
             'model': 'gpt-4o-mini',
             'temperature': 0.7,
-            'max_tokens': 2000,
-            'proxy': ''
+            'max_tokens': 2000
         }
+        # 移除旧的 'proxy' 默认值，因为我们将它移到了独立的 'proxy' 配置段
+        if 'proxy' in openai_defaults:
+            del openai_defaults['proxy']
+
         for key, value in openai_defaults.items():
             if key not in config['openai']:
                 config['openai'][key] = value

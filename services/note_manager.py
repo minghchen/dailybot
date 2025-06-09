@@ -31,10 +31,10 @@ class NoteManager:
             config: 配置信息
         """
         self.config = config
-        self.note_backend = config.get('note_backend', 'obsidian')  # obsidian 或 google_docs
-        self.llm_service = None  # 将在需要时注入
-        
-        # 初始化具体的后端
+        self.note_backend = config.get('note_backend', 'obsidian')
+        self.llm_service = None # Will be injected
+
+        # 恢复到之前的初始化逻辑以修复导入错误
         if self.note_backend == 'obsidian':
             self._init_obsidian(config.get('obsidian', {}))
         elif self.note_backend == 'google_docs':
@@ -42,7 +42,7 @@ class NoteManager:
             self.note_files = config.get('google_docs', {}).get('note_documents', [])
         else:
             raise ValueError(f"不支持的笔记后端: {self.note_backend}")
-        
+
         logger.info(f"笔记管理器初始化成功，使用后端: {self.note_backend}")
     
     def set_llm_service(self, llm_service):
@@ -174,15 +174,23 @@ class NoteManager:
     
     async def save_content(self, content_data: Dict[str, Any]):
         """
-        保存内容到笔记
+        保存提取的内容到指定的笔记后端
         
         Args:
-            content_data: 内容数据，包含title、url、summary、category等
+            content_data: 提取的内容数据
         """
-        if self.note_backend == 'obsidian':
-            await self._save_to_obsidian(content_data)
-        elif self.note_backend == 'google_docs':
-            await self._save_to_google_docs(content_data)
+        logger.info(f"NoteManager 开始保存内容到 {self.note_backend}...")
+        logger.debug(f"待保存数据: Title='{content_data.get('title', '')}', Type='{content_data.get('type', '')}', Category='{content_data.get('category', '')}'")
+        try:
+            if self.note_backend == 'obsidian':
+                await self._save_to_obsidian(content_data)
+            elif self.note_backend == 'google_docs':
+                await self._save_to_google_docs(content_data)
+            
+            logger.info(f"NoteManager 确认内容 '{content_data.get('title', '')}' 已成功交由 {self.note_backend} 处理。")
+        except Exception as e:
+            logger.error(f"NoteManager 在调用后端保存方法时发生异常: {e}", exc_info=True)
+            raise # 重新抛出异常，让上层知道发生了错误
     
     async def _select_note_file_and_category(self, content_data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
         """
@@ -254,27 +262,22 @@ class NoteManager:
             return None, "其他"
     
     async def _save_to_google_docs(self, content_data: Dict[str, Any]):
-        """保存到Google Docs"""
+        """
+        保存内容到Google Docs
+        """
         try:
-            # 智能选择笔记文件和类别
-            selected_file, category = await self._select_note_file_and_category(content_data)
-
-            if not selected_file or 'document_id' not in selected_file:
-                if self.note_files:
-                    selected_file = self.note_files[0]
-                    logger.warning(f"智能选择失败，回退到第一个笔记文件: {selected_file.get('name')}")
-                else:
-                    logger.error("未配置任何Google Docs笔记文件。")
-                    return
-
-            document_id = selected_file.get('document_id')
+            # 自动选择第一个文档作为目标
+            if not self.note_files:
+                raise ValueError("Google Docs配置中未找到任何note_documents，请检查config.json。")
             
-            # 将LLM选择的类别更新到content_data中，以便GoogleDocsManager使用
-            content_data['category'] = category
+            document_id = self.note_files[0].get('document_id')
+            if not document_id:
+                raise ValueError("在Google Docs配置的第一个note_document中未找到有效的'document_id'字段，请检查config.json。")
 
             await self.google_docs_manager.save_content(document_id, content_data)
 
         except Exception as e:
+            # 只记录日志，然后将原始异常重新抛出
             logger.error(f"保存内容到Google Docs时出错: {e}", exc_info=True)
             raise
     
@@ -318,6 +321,7 @@ class NoteManager:
                     summary=summary,
                     context=context,
                     extracted_at=extracted_at,
+                    raw_content=raw_content,
                     article_title=article_title,
                     content_type=content_type,
                     source_user=source_user,
@@ -475,9 +479,9 @@ class NoteManager:
     
     def _build_formatted_note_content(self, title: str, url: str, summary: str,
                                     context: str, extracted_at: datetime, 
-                                    article_title: str = '', content_type: str = 'web_link',
-                                    source_user: str = '', group_name: str = '', 
-                                    is_history: bool = False) -> str:
+                                    raw_content: str = '', article_title: str = '', 
+                                    content_type: str = 'web_link', source_user: str = '', 
+                                    group_name: str = '', is_history: bool = False) -> str:
         """构建格式化的笔记内容（用于旧的文件夹方式）"""
         # 提取日期（精确到月份）
         if 'arxiv' in content_type or 'arxiv' in url.lower():
@@ -523,7 +527,7 @@ class NoteManager:
         
         # 确保标题完整（特别是论文标题）
         # 如果标题被截断（以...结尾），尝试从原始内容中获取完整标题
-        if title.endswith('...') and 'raw_content' in locals():
+        if title.endswith('...') and raw_content:
             # 尝试从原始内容中提取完整标题
             full_title = self._extract_full_title(raw_content, title)
             if full_title:
