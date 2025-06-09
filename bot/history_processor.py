@@ -179,40 +179,31 @@ class HistoryProcessor:
         # 更多映射...
         return "UNKNOWN"
 
-    async def _process_formatted_message_batch(self, messages: List[Dict[str, Any]], group_name: str) -> int:
+    async def _process_formatted_message_batch(self, batch: List[Dict[str, Any]], group_name: str) -> int:
         """
-        处理已经格式化好的消息批次，为每条消息构建完整的Context，并精确分发。
+        处理已经格式化好的消息批次。
+        与实时消息处理不同，这里会将整个批次作为上下文环境。
         """
         if not self.message_handler:
             logger.error("Message Handler 未注入，无法处理历史消息。")
             return 0
         
         processed_count = 0
-        for msg in messages:
+        for i, msg in enumerate(batch):
             try:
+                # 只处理包含链接的消息
                 content = msg.get('content', '')
                 if not self.message_handler.contains_link(content):
                     continue
                 
-                msg_type_code = msg.get('type')
-                
-                # 只处理包含链接的文本或分享卡片消息
-                if msg_type_code == 1: # 纯文本链接
-                    context = Context(type="TEXT", is_group=True, content=content,
-                                      user_id=msg.get('sender_id', 'unknown'),
-                                      nick_name=msg.get('from_user_name', '未知'),
-                                      room_id=msg.get('room_id'), group_name=group_name, msg=msg,
-                                      is_historical=True)
-                    await self.message_handler._handle_text_link_message(context)
-                    processed_count += 1
-                elif msg_type_code == 49: # 分享卡片
-                    context = Context(type="SHARING", is_group=True, content=content,
-                                      user_id=msg.get('sender_id', 'unknown'),
-                                      nick_name=msg.get('from_user_name', '未知'),
-                                      room_id=msg.get('room_id'), group_name=group_name, msg=msg,
-                                      is_historical=True)
-                    await self.message_handler.handle_sharing_message(context)
-                    processed_count += 1
+                # 修正: 传递正确的批次和索引
+                await self.message_handler.handle_historical_message(
+                    current_msg=msg, 
+                    batch_context=batch, # 上下文应该是当前批次
+                    current_index=i,     # 索引也应该是批次内的索引
+                    group_name=group_name
+                )
+                processed_count += 1
 
             except Exception as e:
                 logger.error(f"处理来自 '{group_name}' 的历史消息时出错: {e}", exc_info=True)

@@ -75,137 +75,170 @@ class GoogleDocsManager:
             logger.error(f'获取文档 {document_id} 失败: {error}')
             return None
     
-    async def save_content(self, document_id: str, content_data: Dict[str, Any]):
+    async def save_content(self, document_id: str, content_data: Dict[str, Any], document: Optional[Dict[str, Any]] = None):
         """
         保存内容到Google Docs，智能插入到合适位置
         
         Args:
             document_id: 要保存到的文档ID
             content_data: 内容数据
+            document: (可选) 预加载的文档对象，避免重复请求
         """
         logger.info(f"GoogleDocsManager 开始处理保存任务，目标文档ID: {document_id}")
         try:
-            # 格式化内容
-            formatted_content = self._format_content(content_data)
-            logger.debug(f"格式化后的内容:\n{formatted_content}")
+            # 如果没有传入文档对象，则获取
+            if document is None:
+                document = await self.get_document_content(document_id)
+                if not document:
+                    logger.error(f"无法获取文档内容: {document_id}，保存中断。")
+                    return
             
-            # 获取文档结构
-            document = await self.get_document_content(document_id)
-            if not document:
-                logger.error(f"无法获取文档内容: {document_id}，保存中断。")
-                return
+            # 查重逻辑已移至NoteManager，此处不再执行
             
-            # 检查是否有重复内容
-            if await self._check_duplicate(document, content_data):
-                logger.info(f"内容已存在于文档 {document_id}，跳过: '{content_data.get('title')}'")
-                return
-            logger.debug("内容未重复，继续执行保存。")
-
             # 分析文档结构，找到合适的插入位置
-            insert_position, category_exists = await self._find_insert_position(
-                document, 
-                content_data.get('category', 'others'),
-                content_data.get('title', '')
-            )
-            logger.info(f"计算出的插入位置: {insert_position}, 类别 '{self.categories.get(content_data.get('category', 'others'))}' 是否已存在: {category_exists}")
+            # 注意: category现在由NoteManager的动态分类逻辑提供
+            category_name = content_data.get('category', '未分类')
+            insert_position, category_exists = await self._find_insert_position(document, category_name)
+            logger.info(f"计算出的插入位置: {insert_position}, 类别 '{category_name}' 是否已存在: {category_exists}")
             
             # 构建请求
             requests = []
             
             # 如果类别不存在，先创建类别标题
             if not category_exists:
-                category_name = self.categories.get(
-                    content_data.get('category', 'others'), 
-                    '其他'
-                )
-                requests.extend(self._create_category_section(insert_position, category_name))
-                # 更新插入位置
-                insert_position = insert_position + len(f"\n## {category_name}\n\n")
+                logger.info(f"类别 '{category_name}' 不存在，将在文档末尾创建新的二级标题。")
+                
+                # 如果文档不是空的，先加一个换行，确保新标题在新的一行
+                doc_end_index = document.get('body', {}).get('content', [])[-1].get('endIndex', 1) -1
+                if doc_end_index > 1:
+                    requests.append({
+                        'insertText': {
+                            'location': {'index': doc_end_index},
+                            'text': '\n'
+                        }
+                    })
+                    insert_position = doc_end_index + 1
+                
+                heading_text = f"{category_name}\n"
+                requests.append({
+                    'insertText': {
+                        'location': {'index': insert_position},
+                        'text': heading_text
+                    }
+                })
+                requests.append({
+                    'updateParagraphStyle': {
+                        'range': {
+                            'startIndex': insert_position,
+                            'endIndex': insert_position + len(heading_text) - 1 # -1 to not include newline
+                        },
+                        'paragraphStyle': {'namedStyleType': 'HEADING_2'},
+                        'fields': 'namedStyleType'
+                    }
+                })
+                insert_position += len(heading_text)
             
-            # 插入内容
+            # 插入一个换行符，确保内容和标题（或之前的内容）分开
             requests.append({
                 'insertText': {
-                    'location': {
-                        'index': insert_position
-                    },
-                    'text': formatted_content + '\n\n'
+                    'location': {'index': insert_position},
+                    'text': '\n'
+                }
+            })
+            insert_position += 1
+
+            # --- 使用结构化数据构建内容和格式化请求 ---
+            note_data = content_data['structured_note']
+            url = content_data.get('url', '') # 从上层获取URL
+            final_content, format_ranges = self._format_structured_content(note_data, url)
+            
+            # 插入格式化后的文本
+            requests.append({
+                'insertText': {
+                    'location': {'index': insert_position},
+                    'text': final_content
                 }
             })
             
-            # 应用格式
-            requests.extend(self._format_content_requests(
-                insert_position, 
-                formatted_content,
-                content_data
-            ))
-            
+            # 对第一行应用加粗
+            bold_range = format_ranges.get('bold')
+            if bold_range:
+                requests.append({
+                    'updateTextStyle': {
+                        'range': {
+                            'startIndex': insert_position + bold_range[0],
+                            'endIndex': insert_position + bold_range[1]
+                        },
+                        'textStyle': {'bold': True},
+                        'fields': 'bold'
+                    }
+                })
+
+            # 对第二行应用链接
+            link_range = format_ranges.get('link')
+            if link_range:
+                requests.append({
+                    'updateTextStyle': {
+                        'range': {
+                            'startIndex': insert_position + link_range[0],
+                            'endIndex': insert_position + link_range[1]
+                        },
+                        'textStyle': {
+                            'link': {'url': url}
+                        },
+                        'fields': 'link'
+                    }
+                })
+
             # 执行批量更新
+            log_title_final = note_data.get('title', '未知标题')
             logger.info(f"准备执行 {len(requests)} 个API请求来更新文档...")
             result = self.service.documents().batchUpdate(
                 documentId=document_id,
                 body={'requests': requests}
             ).execute()
             
-            logger.info(f"Google Docs API调用成功，内容已保存: '{content_data.get('title')}'")
+            logger.info(f"Google Docs API调用成功，内容已保存: '{log_title_final}'")
             
         except Exception as e:
             logger.error(f"保存内容到Google Docs ({document_id})失败: {e}", exc_info=True)
     
+    def _format_structured_content(self, note_data: Dict[str, Any], url: str) -> (str, Dict[str, Tuple[int, int]]):
+        """
+        根据结构化的笔记数据生成格式化文本和需要特殊格式的范围。
+        返回 (完整文本, {'bold': (start, end), 'link': (start, end)})
+        """
+        date = note_data.get('date', '')
+        title = note_data.get('title', '（无标题）')
+        link_title = note_data.get('link_title', '（无链接标题）')
+        summary = note_data.get('summary', '（无摘要）')
+
+        # 构建各个部分
+        first_line = f"{date} {title}"
+        second_line = f"{link_title}" # 这里只保留纯文本
+        
+        # 组装最终文本
+        final_text = f"{first_line}\n{second_line}\n{summary}\n\n"
+        
+        # 计算需要格式化的范围
+        bold_start = 0
+        bold_end = len(first_line)
+        
+        link_start = bold_end + 1 # +1 是因为换行符
+        link_end = link_start + len(second_line)
+
+        format_ranges = {
+            'bold': (bold_start, bold_end),
+            'link': (link_start, link_end)
+        }
+
+        return final_text, format_ranges
+    
     def _format_content(self, content_data: Dict[str, Any]) -> str:
         """
-        格式化内容为指定格式
-        
-        Args:
-            content_data: 内容数据
-            
-        Returns:
-            格式化后的文本
+        【已废弃】现在使用 _format_structured_content
         """
-        # 提取信息
-        title = content_data.get('title', '未命名内容')
-        url = content_data.get('url', '')
-        summary = content_data.get('summary', '')
-        article_title = content_data.get('article_title', '')
-        content_type = content_data.get('type', 'web_link')
-        
-        # 提取日期
-        if 'arxiv' in content_type or 'arxiv' in url.lower():
-            # 尝试从URL或标题提取arxiv日期
-            date_match = re.search(r'(\d{4})\.(\d{4,5})', url + ' ' + title)
-            if date_match:
-                year = date_match.group(1)
-                date_str = f"{year}"
-            else:
-                date_str = datetime.now().strftime('%Y')
-        else:
-            # 使用提取日期
-            extracted_at = content_data.get('extracted_at', datetime.now())
-            if isinstance(extracted_at, str):
-                extracted_at = datetime.fromisoformat(extracted_at)
-            date_str = extracted_at.strftime('%Y-%m-%d')
-        
-        # 构建第一行（标题）
-        if 'arxiv' in content_type or 'arxiv' in url.lower():
-            first_line = f"**{date_str} {title}**"
-        else:
-            first_line = f"**{date_str} {title}**"
-        
-        # 构建第二行（文章链接）
-        if article_title and article_title != title:
-            second_line = f"[{article_title}]({url})"
-        else:
-            # 从URL中提取来源
-            source = self._extract_source_from_url(url)
-            second_line = f"[{source}]({url})"
-        
-        # 构建第三行（内容重点，限制为1-5句话）
-        summary_sentences = self._extract_key_sentences(summary, max_sentences=5)
-        third_line = summary_sentences
-        
-        # 组合内容
-        formatted_content = f"{first_line}\n{second_line}\n{third_line}"
-        
-        return formatted_content
+        return ""
     
     def _extract_source_from_url(self, url: str) -> str:
         """从URL提取来源名称"""
@@ -251,56 +284,50 @@ class GoogleDocsManager:
         return '。'.join(key_sentences) + '。'
     
     async def _find_insert_position(self, document: Dict[str, Any], 
-                                  category: str, title: str) -> Tuple[int, bool]:
+                                  category: str) -> Tuple[int, bool]:
         """
-        找到合适的插入位置
+        在文档中找到指定类别的插入位置。
+
+        核心逻辑:
+        1. 遍历所有段落，寻找样式为 HEADING_2 的标题。
+        2. 使用不区分大小写和前后空格的方式进行稳健比较。
+        3. 如果找到匹配的标题，返回该标题段落的 endIndex，新内容将在此之后插入。
+        4. 如果未找到，返回文档末尾的位置，并标记为"类别不存在"。
         
         Args:
             document: 文档对象
-            category: 内容类别
-            title: 内容标题
+            category: 要查找的类别名称
             
         Returns:
             (插入位置索引, 类别是否存在)
         """
         content = document.get('body', {}).get('content', [])
-        category_name = self.categories.get(category, '其他')
         
-        # 查找类别标题
-        category_start = None
-        category_end = None
-        next_category_start = None
-        
-        current_pos = 1  # 文档开始位置
-        
-        for element in content:
+        for element in reversed(content): # 从后往前找，更快找到末尾的类别
             if 'paragraph' in element:
                 paragraph = element['paragraph']
-                text_content = self._extract_text_from_paragraph(paragraph)
-                is_heading_style = paragraph.get('paragraphStyle', {}).get('namedStyleType') == 'HEADING_2'
+                style = paragraph.get('paragraphStyle', {})
                 
-                # 检查是否是二级标题（通过样式或Markdown标记）
-                if is_heading_style or text_content.startswith('## '):
-                    section_title = text_content[3:].strip() if text_content.startswith('## ') else text_content
-                    if section_title == category_name:
-                        category_start = current_pos
-                    elif category_start is not None and next_category_start is None:
-                        next_category_start = current_pos
-                
-                # 更新位置
-                current_pos = element.get('endIndex', current_pos)
-        
-        # 如果找到类别
-        if category_start is not None:
-            # 在该类别的末尾插入（下一个类别之前或文档末尾）
-            if next_category_start is not None:
-                return (next_category_start - 1, True)
-            else:
-                # 在文档末尾插入
-                return (current_pos - 1, True)
-        
-        # 如果没找到类别，在文档末尾创建新类别
-        return (current_pos - 1, False)
+                if style.get('namedStyleType') == 'HEADING_2':
+                    text_content = self._extract_text_from_paragraph(paragraph)
+                    
+                    # 增加日志，暴露从文档中提取到的原始标题文本
+                    logger.debug(f"正在检查文档标题: Raw='{text_content.encode('unicode_escape').decode()}', Cleaned='{text_content.strip()}'")
+
+                    # 稳健比较：忽略首尾空格和大小写，并移除所有换行符
+                    clean_doc_title = re.sub(r'\s+', ' ', text_content).strip().lower()
+                    clean_category = re.sub(r'\s+', ' ', category).strip().lower()
+
+                    if clean_doc_title == clean_category:
+                        # 找到类别，返回该段落的结束位置作为插入点
+                        insert_index = element.get('endIndex', 1)
+                        logger.debug(f"找到已存在的类别 '{category}'，将在索引 {insert_index} 后插入。")
+                        return (insert_index, True)
+
+        # 如果未找到任何匹配的类别，返回文档末尾的位置
+        doc_end_index = content[-1].get('endIndex', 1) if content else 1
+        logger.debug(f"未找到类别 '{category}'，将在文档末尾（索引 {doc_end_index}）创建。")
+        return (doc_end_index, False)
     
     def _extract_text_from_paragraph(self, paragraph: Dict[str, Any]) -> str:
         """从段落元素中提取文本"""
@@ -322,24 +349,33 @@ class GoogleDocsManager:
         Returns:
             是否重复
         """
-        title = content_data.get('title', '')
-        url = content_data.get('url', '')
+        # 修正：从结构化数据中获取标题和URL
+        note_data = content_data.get('structured_note', {})
+        title_to_check = note_data.get('title', '')
+        # URL在顶层，因为它是链接本身，不属于LLM生成的内容
+        url_to_check = content_data.get('url', '')
         
-        # 获取文档文本
+        if not url_to_check and not title_to_check:
+            return False
+
+        content = document.get('body', {}).get('content', [])
         doc_text = self._get_document_text(document)
         
-        # 检查标题是否已存在
-        if title and title in doc_text:
+        # 检查标题（效率较低，但作为备用）
+        if title_to_check and title_to_check in doc_text:
+            logger.info(f"发现疑似重复内容（标题匹配）: '{title_to_check}'")
             return True
-        
-        # 检查URL是否已存在
-        if url and url in doc_text:
-            return True
-        
-        # 检查arXiv ID
-        arxiv_match = re.search(r'(\d{4}\.\d{4,5})', url + ' ' + title)
-        if arxiv_match and arxiv_match.group(1) in doc_text:
-            return True
+            
+        # 检查URL（更可靠）
+        if url_to_check:
+            for element in content:
+                if 'paragraph' in element:
+                    for para_element in element.get('paragraph', {}).get('elements', []):
+                        if 'textRun' in para_element:
+                            text_style = para_element.get('textRun', {}).get('textStyle', {})
+                            if 'link' in text_style and text_style['link'].get('url') == url_to_check:
+                                logger.info(f"发现重复内容（URL完全匹配）: '{url_to_check}'")
+                                return True
         
         return False
     
@@ -355,57 +391,9 @@ class GoogleDocsManager:
         return text
     
     def _create_category_section(self, position: int, category_name: str) -> List[Dict[str, Any]]:
-        """创建类别章节的请求"""
-        return [
-            {
-                'insertText': {
-                    'location': {'index': position},
-                    'text': f"\n## {category_name}\n\n"
-                }
-            }
-        ]
-    
-    def _format_content_requests(self, start_index: int, content: str, 
-                               content_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        创建格式化请求
-        
-        Args:
-            start_index: 开始位置
-            content: 内容文本
-            content_data: 内容数据
-            
-        Returns:
-            格式化请求列表
-        """
-        requests = []
-        lines = content.split('\n')
-        
-        current_index = start_index
-        
-        # 第一行加粗
-        if lines:
-            first_line = lines[0]
-            if first_line.startswith('**') and first_line.endswith('**'):
-                # 去掉Markdown标记
-                actual_text = first_line[2:-2]
-                bold_start = current_index + content.find(actual_text)
-                bold_end = bold_start + len(actual_text)
-                
-                requests.append({
-                    'updateTextStyle': {
-                        'range': {
-                            'startIndex': bold_start,
-                            'endIndex': bold_end
-                        },
-                        'textStyle': {
-                            'bold': True
-                        },
-                        'fields': 'bold'
-                    }
-                })
-        
-        return requests
+        """【已废弃】创建类别章节的请求"""
+        # 此方法已废弃，逻辑已内联到 save_content 中并得到改进
+        return []
     
     async def search_content(self, document_id: str, query: str) -> List[Dict[str, Any]]:
         """
@@ -440,4 +428,24 @@ class GoogleDocsManager:
             
         except Exception as e:
             logger.error(f"搜索文档 {document_id} 失败: {e}")
-            return [] 
+            return []
+    
+    async def get_document_headings(self, document_id: str) -> List[str]:
+        """从文档中提取所有二级标题（HEADING_2）"""
+        document = await self.get_document_content(document_id)
+        if not document:
+            return []
+
+        headings = []
+        content = document.get('body', {}).get('content', [])
+        for element in content:
+            if 'paragraph' in element:
+                paragraph = element['paragraph']
+                # Google Docs的标题有特定的段落样式
+                if paragraph.get('paragraphStyle', {}).get('namedStyleType') == 'HEADING_2':
+                    text_content = self._extract_text_from_paragraph(paragraph)
+                    if text_content: # 确保标题不为空
+                        headings.append(text_content)
+        
+        logger.debug(f"从文档 {document_id} 提取到以下标题: {headings}")
+        return headings 

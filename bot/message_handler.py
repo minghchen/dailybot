@@ -49,7 +49,7 @@ class MessageHandler:
 
         # 初始化内容提取器
         self.content_extractor = ContentExtractor(
-            config=self.config.get('content_extraction', {}),
+            config=self.config,
             llm_service=self.llm_service
         )
         self.content_extractor.set_message_handler(self)
@@ -258,7 +258,7 @@ class MessageHandler:
             extraction_config = self.config.get('content_extraction', {})
             # 自动提取分享内容
             if extraction_config.get('auto_extract_enabled'):
-                await self._extract_content(context)
+                await self._extract_content(context, is_history=context.kwargs.get('is_historical', False))
                 
                 # 如果是静默模式，不回复
                 if extraction_config.get('silent_mode', True):
@@ -272,29 +272,94 @@ class MessageHandler:
             logger.error(f"处理分享消息时出错: {e}", exc_info=True)
             return None
     
-    async def _extract_content(self, context: Context):
+    async def handle_historical_message(self, current_msg: Dict[str, Any], batch_context: List[Dict[str, Any]], current_index: int, group_name: str):
+        """
+        专门处理历史消息，上下文从批次中构建。
+        """
+        logger.debug(f"正在处理来自 '{group_name}' 的历史消息，创建时间: {datetime.fromtimestamp(current_msg['create_time'])}")
+        
+        # 1. 在批次内构建上下文
+        context_messages = self._get_context_from_batch(current_msg, batch_context, current_index)
+        
+        # 2. 构造一个临时的Context对象用于内容提取
+        temp_context = Context(
+            type="SHARING", # 历史消息统一视为分享类型
+            is_group=True,
+            content=current_msg.get('content', ''),
+            user_id=current_msg.get('sender_id', 'unknown'),
+            nick_name=current_msg.get('from_user_name', '未知'),
+            room_id=current_msg.get('room_id', ''),
+            group_name=group_name,
+            msg=current_msg
+        )
+
+        # 3. 调用核心提取逻辑，并传入预处理好的上下文
+        await self._extract_content(temp_context, is_history=True, predefined_context=context_messages)
+
+    def _get_context_from_batch(self, current_msg: Dict[str, Any], batch_context: List[Dict[str, Any]], current_index: int) -> List[Dict[str, Any]]:
+        """从一个消息批次中，为当前消息提取时间窗口内的上下文"""
+        context_messages = []
+        current_time = current_msg['create_time']
+        
+        # 针对历史消息使用更长的时间窗口
+        extraction_config = self.config.get('content_extraction', {})
+        window_seconds = extraction_config.get('history_context_time_window', 300)
+        
+        # 向前查找
+        for i in range(current_index - 1, -1, -1):
+            prev_msg = batch_context[i]
+            time_diff = current_time - prev_msg['create_time']
+            logger.debug(f"  [向前检查] 当前消息时间: {current_time}, 上一条消息时间: {prev_msg['create_time']}, 时间差: {time_diff}s (窗口: {window_seconds}s)")
+            if time_diff <= window_seconds:
+                context_messages.insert(0, prev_msg)
+            else:
+                break
+        
+        # 向后查找
+        for i in range(current_index + 1, len(batch_context)):
+            next_msg = batch_context[i]
+            time_diff = next_msg['create_time'] - current_time
+            logger.debug(f"  [向后检查] 当前消息时间: {current_time}, 下一条消息时间: {next_msg['create_time']}, 时间差: {time_diff}s (窗口: {window_seconds}s)")
+            if time_diff <= window_seconds:
+                context_messages.append(next_msg)
+            else:
+                break
+        
+        # 修正: 使用 'msg_id' (小写) 来兼容从数据库获取的历史消息
+        msg_identifier = current_msg.get('msg_id', current_msg.get('MsgId', '未知ID'))
+        logger.info(f"为历史消息 {msg_identifier} 构建了包含 {len(context_messages)} 条消息的批内上下文。")
+        return context_messages
+
+    async def _extract_content(self, context: Context, is_history: bool = False, predefined_context: Optional[List[Dict[str, Any]]] = None):
         """
         提取内容
         
         Args:
             context: 消息上下文
+            is_history: 是否为历史消息
+            predefined_context: 预定义的上下文消息
         """
-        logger.info(f"--- 开始内容提取流程 (群聊: {context.group_name}) ---")
+        logger.info(f"--- 开始内容提取流程 (群聊: {context.group_name}, 历史消息: {is_history}) ---")
         try:
-            # 获取上下文消息
-            extraction_config = self.config.get('content_extraction', {})
-            context_window = extraction_config.get('context_time_window', 60)
-            context_messages = self._get_context_messages(
-                int(time.time()),
-                context_window,
-                group_name=context.group_name if context.is_group else None
-            )
+            context_messages = []
+            # 如果是历史消息且有预定义上下文，则使用它
+            if is_history and predefined_context is not None:
+                context_messages = predefined_context
+            # 否则，如果是实时消息，从数据库获取
+            elif not is_history:
+                extraction_config = self.config.get('content_extraction', {})
+                context_window = extraction_config.get('context_time_window', 60)
+                context_messages = self._get_context_messages(
+                    int(time.time()),
+                    context_window,
+                    group_name=context.group_name if context.is_group else None
+                )
             
             # 构造消息对象供提取器使用
             msg = {
                 'Text': context.content,
                 'Type': context.type,
-                'CreateTime': int(time.time()),
+                'CreateTime': context.msg.get('create_time') if is_history else int(time.time()),
                 'User': {'NickName': context.nick_name}
             }
             
@@ -308,8 +373,9 @@ class MessageHandler:
                 logger.info("内容提取器未能从消息中提取到有效内容。")
                 return # 提取失败，直接返回
 
-            # 添加群组信息
+            # 添加群组信息和历史标志
             extracted_content['group_name'] = context.group_name if context.is_group else ''
+            extracted_content['is_history'] = is_history
             
             # 保存到笔记
             logger.info("内容提取成功，准备保存到笔记...")
@@ -320,7 +386,8 @@ class MessageHandler:
                 await self.rag_service.add_document(extracted_content)
 
             # 只有在所有步骤都成功后才记录成功日志
-            logger.info(f"--- 内容提取与保存流程全部成功: {extracted_content.get('title', '未知标题')} ---")
+            log_title = extracted_content.get('structured_note', {}).get('title', '未知标题')
+            logger.info(f"--- 内容提取与保存流程全部成功: {log_title} ---")
                     
         except Exception as e:
             logger.error(f"在 _extract_content 执行期间发生致命错误: {e}", exc_info=True)
@@ -339,11 +406,14 @@ class MessageHandler:
             上下文消息列表
         """
         # 从存储中获取消息
-        return self.message_storage.get_messages_in_time_window(
+        logger.info(f"从数据库获取 {group_name or '私聊'} 在时间戳 {target_time} 前后 {window_seconds} 秒的上下文。")
+        results = self.message_storage.get_messages_in_time_window(
             target_time=target_time,
             window_seconds=window_seconds,
             group_name=group_name
         )
+        logger.info(f"获取到 {len(results)} 条消息 (时间窗口: {window_seconds}秒)")
+        return results
     
     async def _generate_reply(self, context: Context) -> Optional[str]:
         """

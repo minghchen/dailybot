@@ -74,4 +74,6 @@ zipp==3.19.2
 pycryptodome
 pyasn1==0.6.0
 pyasn1-modules==0.4.0
-oauthlib==3.2.2 
+oauthlib==3.2.2
+instructor
+playwright 

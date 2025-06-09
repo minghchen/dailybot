@@ -187,7 +187,8 @@ class NoteManager:
             elif self.note_backend == 'google_docs':
                 await self._save_to_google_docs(content_data)
             
-            logger.info(f"NoteManager 确认内容 '{content_data.get('title', '')}' 已成功交由 {self.note_backend} 处理。")
+            log_title = content_data.get('structured_note', {}).get('title', '未知标题')
+            logger.info(f"NoteManager 确认内容 '{log_title}' 已成功交由 {self.note_backend} 处理。")
         except Exception as e:
             logger.error(f"NoteManager 在调用后端保存方法时发生异常: {e}", exc_info=True)
             raise # 重新抛出异常，让上层知道发生了错误
@@ -274,7 +275,75 @@ class NoteManager:
             if not document_id:
                 raise ValueError("在Google Docs配置的第一个note_document中未找到有效的'document_id'字段，请检查config.json。")
 
-            await self.google_docs_manager.save_content(document_id, content_data)
+            # --- 优化流程：先获取文档，进行查重 ---
+            document = await self.google_docs_manager.get_document_content(document_id)
+            if not document:
+                raise ConnectionError(f"无法获取文档 {document_id} 的内容。")
+
+            if await self.google_docs_manager._check_duplicate(document, content_data):
+                log_title = content_data.get('structured_note', {}).get('title', '未知标题')
+                logger.info(f"内容 '{log_title}' 已存在于文档中，跳过保存。")
+                return # 查重成功，直接返回
+
+            # --- LLM动态分类逻辑 ---
+            if self.llm_service:
+                logger.info(f"开始为文档 '{document_id}' 进行LLM动态分类...")
+                
+                # 1. 获取文档的现有标题
+                existing_headings = await self.google_docs_manager.get_document_headings(document_id)
+                
+                # 2. 构建智能分类的Prompt
+                structured_note = content_data.get('structured_note', {})
+                title = structured_note.get('title', '')
+                summary = structured_note.get('summary', '')
+                
+                prompt = f"""你是一个智能笔记分类助手。请根据以下内容的标题和摘要，决定它应该属于哪个类别。
+
+[内容信息]
+标题: {title}
+摘要: {summary}
+
+[文档中已有的类别（请优先选择）]
+{', '.join(existing_headings) if existing_headings else '（本文档尚无分类）'}
+
+[如果以上类别都不合适，可以从以下通用分类中选择或创造一个更合适的新分类]
+- AI方向的时讯和研究
+- LLM
+- LLM Agent
+- Robotics
+- 世界模型
+- 应用案例
+- 技术进展
+
+你的任务：
+1. 分析内容，理解其核心主题。
+2. 对比内容和[文档中已有的类别]，如果匹配，请直接返回那个类别名称。
+3. 如果不匹配，请从[通用分类]中选择一个最合适的，或者根据内容自己创建一个简洁、明确的新类别（例如"多模态学习"）。
+4. **请只返回最终的类别名称，不要包含任何其他解释或前缀。**
+
+类别名称："""
+                
+                # 3. 调用LLM获取分类
+                try:
+                    chosen_category = await self.llm_service.chat(prompt)
+                    chosen_category = chosen_category.strip().replace('类别名称：', '').strip()
+                    logger.info(f"LLM建议的分类是: '{chosen_category}'")
+                    
+                    # 4. 更新content_data中的分类
+                    content_data['category'] = chosen_category
+                except Exception as e:
+                    logger.error(f"LLM动态分类失败，将使用默认分类: {e}")
+                    content_data['category'] = '未分类'
+            else:
+                logger.warning("LLM服务未设置，将使用默认分类。")
+                content_data['category'] = content_data.get('category', '未分类')
+
+            # --- 最终保存，传入已获取的文档避免重复请求 ---
+            await self.google_docs_manager.save_content(
+                document_id, 
+                content_data, 
+                document=document
+            )
 
         except Exception as e:
             # 只记录日志，然后将原始异常重新抛出

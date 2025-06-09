@@ -7,6 +7,7 @@
 ### 1. 自动信息提取与整理
 - 自动识别聊天记录中的链接（公众号文章、B站视频、arXiv论文等）
 - 提取链接前后1分钟内的对话上下文（通过消息持久化存储实现）
+- 采用 [Jina AI Reader](https://github.com/jina-ai/reader) 作为核心解析引擎，通过 `https://r.jina.ai/` API，能够稳定、高效地提取任何URL（包括微信公众号、B站、Arxiv及普通网页）的核心内容，并将其转换为对LLM友好的Markdown格式。
 - 使用LLM对内容进行智能总结（1-5句话精炼总结）
 - 自动分类并保存到笔记系统（支持Obsidian和Google Docs）
 - 智能去重，避免重复内容
@@ -110,7 +111,6 @@ dailybot/
 │   ├── mac_wechat_service.py   # Mac微信服务
 │   └── rag_service.py          # RAG服务
 ├── utils/                      # 工具类
-│   ├── link_parser.py          # 链接解析器
 │   ├── time_utils.py           # 时间工具
 │   ├── video_summarizer.py     # 视频总结工具
 │   └── message_storage.py      # 消息持久化存储
@@ -208,6 +208,9 @@ pip install -r requirements.txt
   OPENAI_API_KEY=你的OpenAI_API密钥
   OPENAI_BASE_URL=https://api.openai.com/v1
   
+  # Jina AI Reader API Key (用于微信公众号等复杂页面提取)
+  JINA_API_KEY=你的Jina_API密钥
+
   # Mac微信通道（静默模式）配置
   WECHAT_DB_KEY=你的64位数据库密钥
   
@@ -549,7 +552,7 @@ A:
 A: 可以使用批量导入功能，或者分批次逐步添加群组到白名单。系统会自动从消息存储中获取上下文。
 
 ### Q: 为什么某些链接无法提取内容？
-A: 可能是网站有反爬虫措施，可以在 `content_extractor.py` 中添加特定的处理逻辑。
+A: 本项目现在依赖 [Jina AI Reader](https://github.com/jina-ai/reader) 进行内容提取，它能处理绝大多数网页。如果遇到特定网站无法提取，可以向 [Jina AI Reader项目](https://github.com/jina-ai/reader/issues) 提出issue，或者在 `services/content_extractor.py` 中实现针对该网站的自定义提取逻辑作为备用方案。
 
 ### Q: 如何备份数据？
 A: 
@@ -588,6 +591,7 @@ A:
 - [x] 智能去重功能
 - [x] Channel 抽象架构，支持三种微信通道
 - [x] 稳定、安全的Mac微信静默读取模式
+- [x] 采用Jina AI Reader重构内容提取，增强稳定性
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
 - [ ] 支持企业微信、飞书等更多通道

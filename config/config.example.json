@@ -72,6 +72,7 @@
   
   "content_extraction": {
     "context_time_window": 60,
+    "history_context_time_window": 300,
     "auto_extract_enabled": true,
     "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
     "silent_mode": true,

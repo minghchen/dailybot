@@ -19,31 +19,27 @@ class ConfigLoader:
     @staticmethod
     def load(config_path: Path) -> Dict[str, Any]:
         """
-        加载配置文件
-        
-        Args:
-            config_path: 配置文件路径
-            
-        Returns:
-            配置字典
+        加载配置文件，并从环境变量中合并敏感信息。
         """
-        # 加载.env文件
+        # 步骤1: 加载.env文件，使其内容可用于os.getenv
         load_dotenv(find_dotenv())
+        logger.info(".env文件已加载（如果存在）。")
         
         try:
+            # 步骤2: 从config.json加载基础配置
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             
-            # 从环境变量覆盖敏感配置
-            ConfigLoader._load_env_vars(config)
+            # 步骤3: 从环境变量覆盖或补充配置
+            ConfigLoader._apply_env_vars(config)
             
-            # 验证配置
+            # 步骤4: 验证合并后的配置
             ConfigLoader._validate_config(config)
             
-            # 处理路径
+            # 步骤5: 处理路径转换
             ConfigLoader._process_paths(config)
             
-            # 设置默认值
+            # 步骤6: 设置默认值
             ConfigLoader._set_defaults(config)
             
             return config
@@ -56,41 +52,38 @@ class ConfigLoader:
             raise Exception(f"加载配置文件失败: {e}")
     
     @staticmethod
-    def _load_env_vars(config: Dict[str, Any]):
-        """从环境变量加载配置"""
+    def _apply_env_vars(config: Dict[str, Any]):
+        """将环境变量中的值应用到配置字典中"""
+        
         # OpenAI配置
-        if 'openai' not in config:
-            config['openai'] = {}
-        
-        # 从环境变量获取API密钥
-        api_key = os.getenv('OPENAI_API_KEY')
-        if api_key:
-            config['openai']['api_key'] = api_key
-            logger.info("从环境变量加载 OpenAI API Key")
-        
-        # 从环境变量获取base URL
-        base_url = os.getenv('OPENAI_BASE_URL')
-        if base_url:
-            config['openai']['base_url'] = base_url
-            logger.info("从环境变量加载 OpenAI Base URL")
-        
-        # --- 代理配置加载 ---
-        # 优先从 config.json 的 'proxy' 部分加载
-        proxy_config = config.get('proxy', {})
-        https_proxy_from_config = proxy_config.get('https')
+        config.setdefault('openai', {})
+        openai_key = os.getenv('OPENAI_API_KEY')
+        openai_base_url = os.getenv('OPENAI_BASE_URL')
+        if openai_key:
+            config['openai']['api_key'] = openai_key
+            logger.info("已从环境变量加载 OpenAI API Key。")
+        if openai_base_url:
+            config['openai']['base_url'] = openai_base_url
+            logger.info("已从环境变量加载 OpenAI Base URL。")
 
-        # 如果配置文件中没有，则尝试从环境变量加载
-        https_proxy_from_env = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+        # Jina AI配置
+        config.setdefault('jina', {})
+        jina_key = os.getenv('JINA_API_KEY')
+        if jina_key:
+            config['jina']['api_key'] = jina_key
+            logger.info("已从环境变量加载 Jina API Key。")
 
-        # 确定最终使用的代理
-        final_https_proxy = https_proxy_from_config or https_proxy_from_env
-
-        if final_https_proxy:
-            source = "配置文件(config.json)" if https_proxy_from_config else "环境变量"
-            logger.info(f"从 {source} 加载了 HTTPS 代理: {final_https_proxy}")
-            # 确保代理设置能被google-api-python-client等库识别
-            os.environ['HTTPS_PROXY'] = final_https_proxy
-            os.environ['https_proxy'] = final_https_proxy # 兼容某些库的大小写需求
+        # 代理配置
+        config.setdefault('proxy', {})
+        proxy_url = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+        if proxy_url and not config['proxy'].get('https'):
+            config['proxy']['https'] = proxy_url
+            logger.info(f"已从环境变量加载 HTTPS 代理: {proxy_url}")
+        
+        # 确保代理设置能被其他库识别
+        if config['proxy'].get('https'):
+            os.environ['HTTPS_PROXY'] = config['proxy']['https']
+            os.environ['https_proxy'] = config['proxy']['https']
     
     @staticmethod
     def _validate_config(config: Dict[str, Any]):

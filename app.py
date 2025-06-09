@@ -68,6 +68,7 @@ class DailyBot:
             sys.exit(1)
             
         try:
+            # ConfigLoader.load 现在返回一个完整的配置对象
             self.config = ConfigLoader.load(config_path)
             logger.info("配置文件加载成功")
             
@@ -184,38 +185,19 @@ class DailyBot:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
         
-        # 加载配置
+        # 步骤 1: 首先，完整加载所有配置，包括环境变量
         self.load_config()
         
-        # 设置日志级别
-        logger.remove()
-        logger.add(
-            sys.stderr,
-            level=self.config['system']['log_level'],
-            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
-        )
+        # 步骤 2: 然后，使用加载好的配置来设置日志系统
+        self._setup_logging()
         
-        # 添加文件日志
-        log_dir = Path(__file__).parent / "logs"
-        log_dir.mkdir(exist_ok=True)
-        logger.add(
-            log_dir / "dailybot_{time}.log",
-            rotation="1 day",
-            retention="7 days",
-            level=self.config['system']['log_level']
-        )
-        
-        # 拦截标准logging，统一由loguru处理
-        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-        logger.info("标准日志已重定向到Loguru")
-
         logger.info("="*50)
         logger.info("DailyBot - 微信信息整理AI助手")
         logger.info(f"笔记后端: {self.config.get('note_backend', 'obsidian')}")
         logger.info(f"消息通道: {self.config['channel_type']}")
         logger.info("="*50)
         
-        # 初始化服务
+        # 步骤 3: 最后，用完整的配置初始化所有服务
         self.init_services()
         
         # 注入channel到message_handler
@@ -244,6 +226,29 @@ class DailyBot:
             if self.channel:
                 self.channel.shutdown()
             logger.info("程序退出")
+
+    def _setup_logging(self):
+        """配置Loguru日志系统"""
+        logger.remove()
+        logger.add(
+            sys.stderr,
+            level=self.config['system']['log_level'],
+            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+        )
+        
+        # 添加文件日志
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        logger.add(
+            log_dir / "dailybot_{time}.log",
+            rotation="1 day",
+            retention="7 days",
+            level=self.config['system']['log_level']
+        )
+        
+        # 拦截标准logging，统一由loguru处理
+        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+        logger.info("标准日志已重定向到Loguru")
 
 
 def main():
