@@ -159,7 +159,7 @@ def test_with_bot_integration():
                 "group_name_white_list": ["AI研究群", "机器人技术交流"]
             },
             "openai": {
-                "model": "gpt-4o-mini"
+                "model": "gpt-4.1"
             },
             "obsidian": {
                 "vault_path": "./test_vault",

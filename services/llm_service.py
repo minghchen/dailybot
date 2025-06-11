@@ -28,9 +28,9 @@ class LLMService:
             config: OpenAI配置信息
         """
         self.config = config
-        self.model = config.get('model', 'gpt-4o-mini')
+        self.model = config.get('model', 'gpt-4.1')
         self.temperature = config.get('temperature', 0.7)
-        self.max_tokens = config.get('max_tokens', 2000)
+        self.max_completion_tokens = config.get('max_completion_tokens', 5000)
         
         # 初始化OpenAI客户端
         self.aclient = instructor.patch(AsyncOpenAI(
@@ -107,7 +107,7 @@ class LLMService:
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
-                max_tokens=self.max_tokens
+                max_completion_tokens=self.max_completion_tokens
             )
             
             # 获取回复

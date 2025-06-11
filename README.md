@@ -274,21 +274,10 @@ python app.py
   
   "openai": {
     // API密钥和base_url从环境变量读取
-    "model": "gpt-4o-mini",                  // 使用的模型
+    "model": "gpt-4.1",                  // 使用的模型
     "temperature": 0.7,                      // 生成温度
-    "max_tokens": 2000,                      // 最大生成长度
-    "conversation_max_tokens": 1000,         // 对话历史最大长度
-    "proxy": "",                              // 代理设置（可选）
-    "message_queue_size": 100,
-    "auto_save_interval": 300,
-    "timezone": "Asia/Shanghai",
-    "admin_list": [],                        // 管理员列表
-    "whitelist_file": "config/group_whitelist.json", // 动态白名单存储文件
-    "history_batch_size": 50,
-    "history_process_delay": 0.5,
-    "max_history_days": 30,
-    "message_db_path": "data/messages.db",   // 消息数据库路径
-    "message_retention_days": 30             // 消息保留天数
+    "max_completion_tokens": 5000,           // 最大生成长度
+    "proxy": ""                              // 代理设置（可选）
   },
   
   "note_backend": "obsidian",  // 笔记后端：obsidian | google_docs
@@ -360,14 +349,14 @@ python app.py
   
   "system": {
     "log_level": "INFO",
-    "message_queue_size": 100,
-    "auto_save_interval": 300,
     "timezone": "Asia/Shanghai",
     "admin_list": [],                        // 管理员列表
     "whitelist_file": "config/group_whitelist.json", // 动态白名单存储文件
-    "history_batch_size": 50,
-    "history_process_delay": 0.5,
-    "max_history_days": 30,
+    "message_queue_size": 100,               // 待处理消息队列大小
+    "auto_save_interval": 300,               // 自动保存间隔（秒）
+    "history_batch_size": 50,                // 历史消息处理批次大小
+    "history_process_delay": 0.5,            // 处理每条历史消息的延迟（秒）
+    "max_history_days": 30,                  // 处理历史消息的最大天数
     "message_db_path": "data/messages.db",   // 消息数据库路径
     "message_retention_days": 30             // 消息保留天数
   }

@@ -163,7 +163,7 @@ class ObsidianManager:
         date = structured_note['date']
         title = structured_note['title']
         link_title = structured_note['link_title']
-        summary = structured_note['summary']
+        summary = structured_note['gist']
         
         metadata_to_embed = {
             "url": url,

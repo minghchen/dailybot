@@ -138,9 +138,9 @@ class ConfigLoader:
         """设置默认值"""
         # OpenAI默认值
         openai_defaults = {
-            'model': 'gpt-4o-mini',
+            'model': 'gpt-4.1',
             'temperature': 0.7,
-            'max_tokens': 2000
+            'max_completion_tokens': 2000
         }
         # 移除旧的 'proxy' 默认值，因为我们将它移到了独立的 'proxy' 配置段
         if 'proxy' in openai_defaults:

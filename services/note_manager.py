@@ -136,7 +136,7 @@ class NoteManager:
             return self.note_files_config[0]
 
         title = content_data.get('structured_note', {}).get('title', '')
-        summary = content_data.get('structured_note', {}).get('summary', '')
+        summary = content_data.get('structured_note', {}).get('gist', '')
 
         options_str = "\n".join([
             f"{i+1}. 文件名: {f.get('name', '未命名')}\n   描述: {f.get('description', '无描述')}"
@@ -217,7 +217,7 @@ class NoteManager:
 
         tree_str = self._format_headings_as_tree(doc_structure['headings'])
         title = content_data.get('structured_note', {}).get('title', '')
-        summary = content_data.get('structured_note', {}).get('summary', '')
+        summary = content_data.get('structured_note', {}).get('gist', '')
 
         # 预处理，找出所有的叶子节点
         headings = doc_structure['headings']

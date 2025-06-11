@@ -16,7 +16,7 @@ import aiohttp
 from playwright.async_api import async_playwright
 import html
 
-from utils.video_summarizer import BilibiliSummarizer
+# from utils.video_summarizer import BilibiliSummarizer
 
 # 仅在类型检查时导入，以避免循环导入
 if TYPE_CHECKING:

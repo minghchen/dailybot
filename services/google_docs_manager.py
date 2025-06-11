@@ -222,7 +222,7 @@ class GoogleDocsManager:
         date = note_data.get('date', '')
         title = note_data.get('title', '（无标题）')
         link_title = note_data.get('link_title', '（无链接标题）')
-        summary = note_data.get('summary', '（无摘要）')
+        summary = note_data.get('gist', '（无摘要）')
 
         # 构建各个部分
         prefix_line = "[自动导入]"

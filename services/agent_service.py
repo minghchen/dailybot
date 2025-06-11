@@ -6,11 +6,12 @@
 """
 
 import asyncio
+import json
 from typing import Dict, Any, Union, Optional, TYPE_CHECKING
 from loguru import logger
 from pydantic import Field, BaseModel
 from duckduckgo_search import DDGS
-import instructor
+from duckduckgo_search.exceptions import RatelimitException, DuckDuckGoSearchException
 
 from services.llm_service import LLMService
 
@@ -23,10 +24,11 @@ if TYPE_CHECKING:
 
 class StructuredNote(BaseModel):
     """结构化的笔记内容模型"""
-    date: str = Field(..., description="根据文章内容或当前日期，生成的年月格式，如 '2025.06'。")
-    title: str = Field(..., description="文章的完整、准确的标题。")
-    link_title: str = Field(..., description="适合用作超链接文本的简洁标题，通常与主标题相同或为其缩写。")
-    summary: str = Field(..., description="对文章核心价值的深度、精炼的中文总结。目标是用2-3句话点明核心贡献/观点。只有在内容确实包含多个重要、独立的技术点时，才扩展到4-5句话。")
+    explanation_blog: str = Field(..., description="用于生成gist的、易于理解的博客风格长文解释，作为思维链的显式输出。")
+    date: str = Field(..., description="核心论文或官方报道的发布年月 (格式 YYYY.MM)。如果内容与特定作品无关，则使用链接内容的年月。")
+    title: str = Field(..., description="核心论文、项目或官方报道的**完整、准确的标题**。如果内容与特定核心作品无关，则使用链接内容的标题。")
+    link_title: str = Field(..., description="原始链接的网页标题。")
+    gist: str = Field(..., description="对文章核心价值的深度、精炼、易懂的中文笔记。目标是用2-4句话点明核心贡献/观点，并包含关键数据。")
 
 class SearchAndSummarize(BaseModel):
     """
@@ -131,11 +133,27 @@ class AgentService:
     async def _search_and_get_content(self, query: str, original_content: str) -> str:
         """
         执行搜索，获取新内容，并与原始内容合并。
+        由于新版duckduckgo-search是同步的，我们使用asyncio.to_thread在非阻塞的线程中运行它。
         """
-        logger.info(f"正在执行搜索: {query}")
+        logger.info(f"正在执行非阻塞的同步搜索: {query}")
+        
+        # 兼容应用全局代理配置
+        proxy_config = self.config.get("proxy", {})
+        proxy = proxy_config.get("https") or proxy_config.get("socks5")
+        
+        if proxy:
+            logger.info(f"检测到并使用全局代理进行搜索: {proxy}")
+        
         try:
-            with DDGS() as ddgs:
-                results = [r for r in ddgs.text(query, max_results=3)]
+            # 定义将在独立线程中运行的同步函数
+            def sync_search():
+                # 使用with语句确保资源被正确管理
+                with DDGS(proxy=proxy, timeout=20) as ddgs:
+                    # 新版库的text方法直接返回一个列表
+                    return ddgs.text(query, max_results=3)
+
+            # 使用asyncio.to_thread运行同步代码，避免阻塞事件循环
+            results = await asyncio.to_thread(sync_search)
 
             if not results:
                 logger.warning(f"未能找到关于 '{query}' 的任何搜索结果。")
@@ -159,66 +177,98 @@ class AgentService:
 来源URL: {search_url}
 标题: {new_content_info.get('title')}
 内容:
-{new_content_info.get('content')}
+{new_content_info.get('content')[:10000]}
 """
                 return enriched_content
             else:
                 logger.warning("从搜索结果链接中提取内容失败，将使用原始内容。")
                 return original_content
 
+        except RatelimitException:
+            # 捕获特定的速率限制异常，给出明确提示
+            logger.error(f"搜索时遭遇速率限制。请考虑在配置中添加代理或检查代理是否可用。将回退到直接总结。")
+            return original_content
+        except DuckDuckGoSearchException as e:
+            # 捕获其他来自库的搜索异常
+            logger.error(f"DuckDuckGo搜索时发生错误: {e}", exc_info=True)
+            return original_content
         except Exception as e:
-            logger.error(f"搜索或提取新内容时出错: {e}", exc_info=True)
+            # 捕获其他通用异常
+            logger.error(f"搜索或提取新内容时发生未知错误: {e}", exc_info=True)
             return original_content
     
     async def generate_structured_note(self, article_content: str, conversation_context: str) -> StructuredNote:
         """
         使用LLM和Instructor生成结构化的笔记内容。
-        (从 LLMService 移入)
+        此方法采用"显式思维链"模式：引导LLM先输出一篇完整的博客解读，然后再基于此解读提炼笔记，并将两者一并输出。
         """
+        # === Stage 1: Define the ideal output structure using a few-shot example ===
+        example_blog = """想象一下，你要指挥一个机器人点击手机屏幕上的"购物车"图标。在过去，它会像报经纬度一样输出图标的精确坐标（比如 x=0.345, y=0.721），然后再把这串数字告诉机器人。这种方式不仅死板（按钮那么大一块，为啥非要点最中心？），而且极度脆弱——但凡手机屏幕尺寸变了，或者UI布局稍微调整一下，之前测的坐标就全作废了，机器人瞬间就"瞎了"。这就是传统GUI Agent的痛点：它们不"理解"界面，只"记忆"坐标。
+
+微软的研究团队决定彻底改变这个现状，他们推出的GUI-Actor，就是要让AI Agent像我们人类一样，用"眼睛"去"看懂"界面，然后直接伸手去点。它的核心思想，就是一场"无坐标革命"。
+
+为了实现这个目标，GUI-Actor引入了几项关键技术：
+1.  **<ACTOR>令牌：给AI一根"虚拟手指"**。在给AI的指令里，不再包含坐标，而是插入一个特殊的`<ACTOR>`标记，比如指令变成："点击 <ACTOR> 购物车图标"。这个令牌就像一根虚拟的激光笔，通过注意力机制，AI会自动将它指向屏幕上与"购物车图标"语义最相关的视觉区域。
+2.  **多区块监督：从"瞄准一个点"到"覆盖一个面"**。传统方法只认一个正确的坐标点，稍微偏移一点就算失败。而GUI-Actor则把目标（比如按钮）所覆盖的所有图像区块（一个区块大约28x28像素）都视为正确答案。这让模型在训练时更加鲁棒，也更符合人类"点个大概就行"的直觉。
+3.  **轻量验证器：AI的"二次确认"机制**。模型会基于注意力分数，选出好几个最可能的目标候选区域，然后一个极小的验证器会快速对这些候选区域进行打分，选出最优的那个。这就像我们点外卖前，会先扫一眼菜单，再最终确认点哪个菜一样。
+
+这套"组合拳"的效果是惊人的。在行业公认的高难度专业软件测试基准ScreenSpot-Pro上，GUI-Actor仅用一个7B参数的小模型，就拿下了44.6分，而之前的业界顶尖模型UI-TARS，用了足足72B的参数，也才得到38.1分。这意味着GUI-Actor用不到十分之一的参数量，却实现了17%的性能超越。更重要的是，它在不同分辨率和布局下的表现也稳定得多，并且训练时所需的数据量也远少于传统方法。"""
+        
+        example_gist = """GUI-Actor通过一种"区域定位"新范式，颠覆了传统UI Agent预测(x,y)坐标的模式。其核心机制是：通过注意力模型，将指令文本中的<ACTOR>特殊标记（可理解为"虚拟手指"）与屏幕上的目标视觉区块直接关联，从而让模型"看懂"并直接锁定目标区域。正因为是选择区域而非单个点，该方法从根本上解决了模型对分辨率、UI布局变化的敏感性问题。在ScreenSpot-Pro高难度基准测试上，其实验结果惊人：一个7B的小模型得分(44.6)竟远超72B的前冠军模型(38.1)。"""
+
+        # === Stage 2: Define the prompt with clear instructions, removing the hardcoded example ===
         prompt = f"""
-# Role: 你是一位资深的技术研究分析师。
+# Role: 你是一位资深的技术研究分析师，同时也是一位出色的技术博主。
 
-# Background: 你正在整理一份研究笔记。你收到了三份信息：一份是文章/论文的主要内容，一份是围绕这篇文章的相关对话，一份是可能的补充材料。
+# Goal: 你的任务是分两步，先将技术文章解读为一篇易懂的博客，然后基于这篇博客提炼出一份精华笔记，并一起输出。
 
-# Primary Goal: 你的核心任务是**为未来的自己**提炼出文章最关键的价值点，生成一段高度浓缩、富有洞察力的总结。这份总结应该能让你在几个月后迅速回忆起这项研究的核心贡献。
+# Final Output (严格按此JSON结构输出):
+你必须生成一个包含以下所有字段的JSON对象：
 
-# Input Data:
-1.  **[文章内容]**: 这是分析的主要对象。它可能包含原始文章和补充搜索到的材料。
-2.  **[对话上下文]**: 这份内容仅用作**理解的透镜**。它可以帮你：
-    -   **聚焦重点**: 对话中反复讨论的部分，可能是文章的重点。
-    -   **纠正偏差**: 如果对话指出了原文中可能被误解的地方，你的总结应体现出更正后的理解。
-    -   **绝对不要**在最终总结中直接引用对话内容。
+1.  `explanation_blog`: 一篇逻辑清晰、引人入胜的博客文章(1000字以内)。
+    -   **写作要求**: 像顶级技术博主一样，娓娓道来文章的动机和价值，清晰地用大白话解释技术点，并用最亮眼的数据支撑。
+    -   **绝对不要**在博客结尾写关于"未来意义"或"价值"的总结性空话。在陈述完核心思想和数据后就停止。
+2.  `title`, `date`, `link_title`, `gist`:
+    -   `title`: 识别文章中讨论的**核心实体**（论文、项目等）。此字段必须是该核心实体的**官方、完整标题**。如果文章本身就是核心内容（即它不是在介绍另一个东西），则此字段应为文章自身的标题。
+    -   `date`: 此字段必须是**核心实体**的发布日期（格式 YYYY.MM）。如果找不到或不适用，则使用文章的发布年月。
+    -   `link_title`: 原始链接的网页标题。
+    -   `gist`:
+        -   **来源**: 基于你上面刚刚写好的 `explanation_blog` 进行提炼。
+        -   **必须解释核心机制 (How)**: 不能只说"提出新范式"，要用一句话讲清楚这个范式是怎么运作的。例如，不是说"无坐标交互"，而是要说明它是"通过注意力机制将指令中的特定标记关联到屏幕图像区块"来实现的。
+        -   **连接机制与优势 (Why)**: 清晰地说明这个核心机制如何带来了关键优势。例如，"因为是区域定位而非点定位，所以对分辨率变化更鲁棒"。
+        -   **数据必须带上下文**: 提及关键数据时，必须说明是在哪个测试集/基准上取得的。
+        -   **可读性**: 语言要精炼，但必须保留博客中的通俗易懂性（如关键比喻或细节），让非该领域的人也能快速理解。
+        -   **格式要求**: 最终形成一个2-4句话的、逻辑连贯的中文段落(300字以内)。
 
-# Output Requirement (The `summary` field):
--   **必须使用中文**: 你的最终输出必须是流畅的中文。
--   **精炼为王 (2-3句话)**: 总结的核心是简洁。请用2-3句话精准概括。这需要你深入思考，回答诸如"这篇文章解决了什么核心问题？"和"它的关键思想/方法是什么？"这类问题。
--   **量化结果**: 如果文章提及其效果，请用关键实验数据来支撑。例如，"通过XXX方法，在YYY任务上将准确率从A%提升到B%"。
--   **杜绝套话**: 严禁使用"本文揭示了...的障碍"或"为未来研究提供了...路径"这类泛泛而谈的句子。你的总结必须具体、有料。
--   **按需扩展 (4-5句话)**: 仅当文章包含多个、同等重要的核心贡献，无法在3句话内概括时，才扩展至4-5句话。
--   **形成段落**: 将你的洞察编织成一段连贯、流畅的段落，而非要点列表。
+[blog示例]
+{example_blog}
+[gist示例]
+{example_gist}
 
 ---
 [对话上下文]
 {conversation_context}
-
 ---
 [文章内容]
-{article_content[:15000]} # 增加内容长度限制以处理更丰富的上下文
+{article_content[:15000]}
 ---
 
-请基于以上要求，生成结构化的笔记。
+请开始创作，并生成包含 `explanation_blog` 和其他笔记字段的完整JSON对象。
 """
         try:
             note = await self.llm_service.aclient.chat.completions.create(
                 model=self.llm_service.model,
                 response_model=StructuredNote,
                 messages=[
+                    # 为模型提供一个高质量的输入输出范例
+                    {"role": "user", "content": "请为我分析这篇关于GUI-Actor的文章..."},
+                    # 这是本次实际需要处理的任务
                     {"role": "user", "content": prompt},
                 ],
                 max_retries=2,
             )
-            logger.info("LLM成功生成了高质量的结构化笔记。")
+            logger.info("LLM基于显式思维链和Few-shot示例，成功生成了博客和结构化笔记。")
             return note
         except Exception as e:
-            logger.error(f"使用Instructor生成结构化笔记失败: {e}", exc_info=True)
+            logger.error(f"使用Instructor和显式思维链生成结构化笔记失败: {e}", exc_info=True)
             raise 
