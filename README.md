@@ -17,11 +17,11 @@
 - 群组聊天：被@时触发
 - 基于RAG技术，从笔记库中检索相关内容后生成回答
 
-### 3. 群组白名单管理
-- 灵活的群组白名单配置，只有白名单中的群组才会启用功能
-- 支持动态添加/移除群组
-- 新群组加入时自动处理历史消息
-- 支持导入导出的聊天记录处理
+### 3. 白名单管理
+- **灵活的白名单配置**：可以分别设置群聊白名单和个人用户白名单。
+- 只有白名单中的群聊或个人用户的消息才会被处理。
+- 支持通过指令动态管理白名单。
+- 新会话加入时自动处理历史消息。
 
 ### 4. 智能层级分类管理
 - **动态层级分析**: 能够解析笔记后端（如 Google Docs）的完整标题结构（H1, H2, H3 等），形成一个层级树。
@@ -245,7 +245,8 @@ python app.py
     "ws_url": "ws://localhost:8788",         // WebSocket服务地址
     "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊触发前缀
-    "group_name_white_list": [],             // 群组白名单
+    "group_name_white_list": [],             // 群聊白名单
+    "user_name_white_list": [],              // 用户白名单
     "message_limit_per_minute": 20,          // 每分钟消息限制
     "min_reply_delay": 2,                    // 最小回复延迟（秒）
     "max_reply_delay": 5                     // 最大回复延迟（秒）
@@ -255,7 +256,8 @@ python app.py
   "wcf": {
     "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊触发前缀
-    "group_name_white_list": [],             // 群组白名单
+    "group_name_white_list": [],             // 群聊白名单
+    "user_name_white_list": [],              // 用户白名单
     "group_at_sender": true                  // 群聊是否@发送者
   },
   
@@ -265,7 +267,8 @@ python app.py
     "poll_interval": 60,                     // 静默模式轮询间隔（秒）
     "single_chat_prefix": ["bot", "@bot"],   // 私聊/Hook模式触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊/Hook模式触发前缀
-    "group_name_white_list": []             // 群组白名单
+    "group_name_white_list": [],             // 群聊白名单
+    "user_name_white_list": []               // 用户白名单
   },
   
   "openai": {
@@ -274,7 +277,17 @@ python app.py
     "temperature": 0.7,                      // 生成温度
     "max_tokens": 2000,                      // 最大生成长度
     "conversation_max_tokens": 1000,         // 对话历史最大长度
-    "proxy": ""                              // 代理设置（可选）
+    "proxy": "",                              // 代理设置（可选）
+    "message_queue_size": 100,
+    "auto_save_interval": 300,
+    "timezone": "Asia/Shanghai",
+    "admin_list": [],                        // 管理员列表
+    "whitelist_file": "config/group_whitelist.json", // 动态白名单存储文件
+    "history_batch_size": 50,
+    "history_process_delay": 0.5,
+    "max_history_days": 30,
+    "message_db_path": "data/messages.db",   // 消息数据库路径
+    "message_retention_days": 30             // 消息保留天数
   },
   
   "note_backend": "obsidian",  // 笔记后端：obsidian | google_docs
@@ -341,7 +354,7 @@ python app.py
     "auto_save_interval": 300,
     "timezone": "Asia/Shanghai",
     "admin_list": [],                        // 管理员列表
-    "whitelist_file": "config/group_whitelist.json",
+    "whitelist_file": "config/group_whitelist.json", // 动态白名单存储文件
     "history_batch_size": 50,
     "history_process_delay": 0.5,
     "max_history_days": 30,
@@ -357,24 +370,24 @@ python app.py
 2. config.json 中的配置
 3. 默认值（如果都没有配置）
 
-### 群组白名单管理
+### 白名单管理
 
 #### 配置方式
-1. **静态配置**：在 `config.json` 中设置 `group_name_white_list`
-   - `[]`: 空列表，需要手动添加群组
-   - `["群组1", "群组2"]`: 只对指定群组生效
+1. **静态配置**：在 `config.json` 中分别设置 `group_name_white_list` 和 `user_name_white_list`。
+   - `group_name_white_list`: `["群聊名称1", "群聊名称2"]`
+   - `user_name_white_list`: `["联系人昵称1", "联系人备注1"]`
 
-2. **动态管理**：通过管理命令动态添加/移除群组
+2. **动态管理**：通过管理命令动态添加/移除（此功能待完善以支持两种列表）
    - 发送私聊消息给机器人：
      - `#add_group 群组名称`: 添加群组到白名单
-     - `#remove_group 群组名称`: 从白名单移除群组
-     - `#list_groups`: 查看当前白名单
+     - `#add_user 用户名称`: 添加用户到白名单
+     - `#list_whitelists`: 查看所有白名单
 
 3. **管理员权限**：在配置中设置 `system.admin_list` 来限制管理命令的使用
 
 #### 历史消息处理
-当新群组加入白名单时，机器人会自动：
-1. 扫描该群组的历史聊天记录（基于已存储的消息）
+当新的群聊或用户加入白名单时，机器人会自动：
+1. 扫描该会话的历史聊天记录（基于已存储的消息）
 2. 提取其中的链接和相关内容
 3. 按照正常流程整理到笔记系统中
 
@@ -387,7 +400,7 @@ python app.py
 支持处理导出的聊天记录：
 ```python
 # 支持的格式：txt、json、html
-# 使用管理命令：#import_history /path/to/export.txt 群组名称
+# 使用管理命令：#import_history /path/to/export.txt 会话名称
 ```
 
 ### Google Docs 配置 (可选)
@@ -416,7 +429,7 @@ python app.py
 ### 1. 消息持久化存储
 - 所有消息都会自动保存到SQLite数据库
 - 确保能获取完整的时间窗口内的上下文
-- 支持按时间、群组查询历史消息
+- 支持按时间、会话查询历史消息
 
 ### 2. 动态分类管理
 - **对于Google Docs和Obsidian**:
@@ -527,7 +540,7 @@ A:
 - 确认 `config.json` 中的配置是否正确。
 
 ### Q: 如何处理大量历史消息？
-A: 可以使用批量导入功能，或者分批次逐步添加群组到白名单。系统会自动从消息存储中获取上下文。
+A: 可以使用批量导入功能，或者分批次逐步添加会话到白名单。系统会自动从消息存储中获取上下文。
 
 ### Q: 为什么某些链接无法提取内容？
 A: 本项目现在依赖 [Jina AI Reader](https://github.com/jina-ai/reader) 进行内容提取，它能处理绝大多数网页。如果遇到特定网站无法提取，可以向 [Jina AI Reader项目](https://github.com/jina-ai/reader/issues) 提出issue，或者在 `services/content_extractor.py` 中实现针对该网站的自定义提取逻辑作为备用方案。
@@ -536,7 +549,7 @@ A: 本项目现在依赖 [Jina AI Reader](https://github.com/jina-ai/reader) 进
 A: 
 - Obsidian笔记通过iCloud自动同步
 - 向量数据库在 `data/vector_store` 目录
-- 群组白名单在 `config/group_whitelist.json`
+- 会话白名单在 `config/group_whitelist.json`
 - 消息数据库在 `data/messages.db`
 
 ### Q: 如何自定义分类？
@@ -566,7 +579,7 @@ A:
 - [x] 内容提取与总结
 - [x] Obsidian笔记集成
 - [x] RAG问答系统
-- [x] 群组白名单管理
+- [x] 会话白名单管理
 - [x] 历史消息处理
 - [x] 消息持久化存储
 - [x] 动态分类管理 (支持 Obsidian 文件夹/文件内二级标题)

@@ -135,20 +135,111 @@ class ContentExtractor:
             logger.error(f"通过Jina Reader提取内容时发生未知错误: {e}", exc_info=True)
             return None
 
-    async def extract(self, msg: Dict[str, Any], context_messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """统一提取消息中的链接内容"""
+    async def _fetch_bilibili_content_from_web(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        专门为Bilibili链接设计的内容提取器。
+        它会处理b23.tv短链，跳转到实际视频页面，并抓取标题和描述。
+        """
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+        }
         try:
-            # 使用新的解析函数
-            links = self._parse_links_from_xml(msg.get('Text', ''))
-            if not links:
-                return None
-            
-            url = links[0]
-            logger.info(f"开始使用Jina Reader处理链接: {url}")
+            async with aiohttp.ClientSession(headers=headers) as session:
+                logger.debug(f"正在请求Bilibili URL: {url}")
+                async with session.get(url, allow_redirects=True, timeout=20) as response:
+                    if response.status != 200:
+                        logger.error(f"请求Bilibili链接失败，状态码: {response.status}, 最终URL: {response.url}")
+                        return None
+                    
+                    final_url = response.url
+                    logger.info(f"Bilibili链接已跳转至: {final_url}")
+                    html_content = await response.text()
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # 优先从h1标签获取标题，更准确
+                    title_tag = soup.find('h1', class_='video-title')
+                    if not title_tag:
+                         title_tag = soup.find('title') # 备用方案
+                    title = title_tag.text.strip() if title_tag else '未知标题'
 
-            content_info = await self._fetch_content_with_reader(url)
+                    # B站的视频简介通常在 <meta name="description" ...> 标签中
+                    desc_tag = soup.find('meta', attrs={'name': 'description'})
+                    description = desc_tag['content'] if desc_tag and desc_tag.get('content') else ''
+                    
+                    if description:
+                        logger.info(f"成功从Bilibili页面meta标签提取到描述。")
+                        return {'title': title, 'content': description}
+                    
+                    # 如果meta标签没有，尝试从特定的div中获取
+                    logger.warning(f"在Bilibili页面 {final_url} 未找到description meta标签，尝试其他方式。")
+                    desc_div = soup.find('div', class_='desc-info-content')
+                    if desc_div:
+                        description = desc_div.text.strip()
+                        logger.info("通过查找class='desc-info-content'的div成功提取到描述。")
+                        return {'title': title, 'content': description}
+
+                    logger.warning(f"在Bilibili页面未能找到任何描述信息，将仅返回标题。")
+                    return {'title': title, 'content': ''}
+
+        except asyncio.TimeoutError:
+            logger.error(f"请求Bilibili链接超时: {url}")
+            return None
+        except Exception as e:
+            logger.error(f"提取Bilibili内容时发生未知错误: {e}", exc_info=True)
+            return None
+
+    async def extract(self, msg: Dict[str, Any], context_messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """统一提取消息中的链接内容，优先处理特定类型如视频号"""
+        try:
+            xml_string = msg.get('Text', '')
+            content_info = None
+            url = None
+
+            # 1. 检查是否为微信视频号内容 (通过<finderFeed>标签判断)
+            if '<finderFeed>' in xml_string:
+                logger.info("检测到微信视频号分享，直接从XML中提取内容。")
+                try:
+                    soup = BeautifulSoup(xml_string, 'xml')
+                    finder_feed = soup.find('finderFeed')
+                    if finder_feed:
+                        nickname = finder_feed.find('nickname').text if finder_feed.find('nickname') else '未知作者'
+                        desc = finder_feed.find('desc').text.strip() if finder_feed.find('desc') else '无描述'
+                        object_id = finder_feed.find('objectId').text if finder_feed.find('objectId') else ''
+                        
+                        title = f"来自“{nickname}”的视频号分享"
+                        content_info = {'title': title, 'content': desc}
+                        
+                        url = f"wechat_channels_{object_id}" 
+                        logger.info(f"成功从XML中提取视频号内容, 标题: '{title}', 内容: '{desc[:50]}...'")
+                    else:
+                        logger.warning("消息中发现 <finderFeed> 标签，但解析内部结构失败。")
+                except Exception as e:
+                    logger.error(f"从视频号XML中提取内容失败: {e}", exc_info=True)
+                    content_info = None
+
+            # 2. 如果不是视频号内容或提取失败，则走标准的链接提取逻辑
             if not content_info:
-                logger.warning(f"未能从 {url} 提取到任何内容。")
+                links = self._parse_links_from_xml(xml_string)
+                if not links:
+                    logger.debug("在消息中未找到可处理的链接或视频号内容。")
+                    return None
+                
+                url = links[0]
+
+                is_bilibili = 'b23.tv' in url or 'bilibili.com' in url or '<appname>哔哩哔哩</appname>' in xml_string
+                if is_bilibili:
+                    logger.info(f"检测到Bilibili链接，使用专用抓取器: {url}")
+                    content_info = await self._fetch_bilibili_content_from_web(url)
+                    if not content_info:
+                        logger.warning("Bilibili专用抓取器未能提取内容，将尝试通用提取器。")
+
+                if not content_info:
+                    logger.info(f"使用通用Jina Reader处理链接: {url}")
+                    content_info = await self._fetch_content_with_reader(url)
+
+            # 3. 后续处理
+            if not content_info or not content_info.get('content'):
+                logger.warning(f"未能从消息 {url or ''} 中提取到任何有效内容。")
                 return None
             
             logger.info(f"成功从 {url} 提取到内容，标题: '{content_info.get('title', '')}'")

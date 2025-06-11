@@ -6,6 +6,7 @@
     "single_chat_prefix": ["bot", "@bot"],
     "group_chat_prefix": ["@bot"],
     "group_name_white_list": [],
+    "user_name_white_list": [],
     "message_limit_per_minute": 20,
     "min_reply_delay": 2,
     "max_reply_delay": 5
@@ -15,6 +16,7 @@
     "single_chat_prefix": ["bot", "@bot"],
     "group_chat_prefix": ["@bot"],
     "group_name_white_list": [],
+    "user_name_white_list": [],
     "group_at_sender": true
   },
   
@@ -23,7 +25,8 @@
     "poll_interval": 60,
     "single_chat_prefix": ["bot", "@bot"],
     "group_chat_prefix": ["@bot"],
-    "group_name_white_list": []
+    "group_name_white_list": [],
+    "user_name_white_list": []
   },
   
   "openai": {

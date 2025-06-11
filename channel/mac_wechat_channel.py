@@ -29,7 +29,7 @@ class MacWeChatChannel(Channel):
         self.is_running = False
         self.message_callback = None
         
-        mac_config = self.config
+        mac_config = self.config.get('mac_wechat', {})
         
         # 根据配置决定运行模式
         self.mode = mac_config.get('mode', 'silent')
@@ -44,6 +44,9 @@ class MacWeChatChannel(Channel):
         self.poll_thread = None
         self.lock = Lock()
         self.state_file = Path.home() / ".dailybot/mac_channel_state.json"
+        # 从配置中分别获取群聊和用户的白名单
+        self.group_name_white_list = mac_config.get('group_name_white_list', [])
+        self.user_name_white_list = mac_config.get('user_name_white_list', [])
 
     def startup(self):
         """启动通道"""
@@ -84,6 +87,48 @@ class MacWeChatChannel(Channel):
         except Exception as e:
             logger.error(f"Mac WeChat Channel 启动失败: {e}")
             self.is_running = False
+
+    def get_whitelisted_conversations(self) -> List[Dict[str, Any]]:
+        """
+        获取白名单中所有会话（群聊和个人）的详细信息。
+        这使得上层应用（如HistoryProcessor）可以统一处理所有白名单会话。
+        """
+        if not self.service:
+            logger.warning("服务未初始化，无法获取白名单会话。")
+            return []
+        
+        whitelisted_items = []
+        all_contacts = self.service.get_contacts()
+        if not all_contacts:
+            logger.warning("无法从服务中获取任何联系人信息。")
+            return []
+
+        # 1. 处理群聊白名单
+        for name in self.group_name_white_list:
+            found = False
+            for contact in all_contacts:
+                if contact.get('type') == 'group' and contact.get('nickname') == name:
+                    whitelisted_items.append(contact)
+                    logger.info(f"在群聊白名单中找到: '{name}' (ID: {contact.get('user_id')})")
+                    found = True
+                    break
+            if not found:
+                logger.warning(f"在联系人列表中未找到群聊白名单中的: '{name}'")
+                
+        # 2. 处理用户白名单
+        for name in self.user_name_white_list:
+            found = False
+            for contact in all_contacts:
+                # 只在好友类型中查找
+                if contact.get('type') == 'friend' and (contact.get('nickname') == name or contact.get('remark') == name):
+                    whitelisted_items.append(contact)
+                    logger.info(f"在用户白名单中找到: '{name}' (ID: {contact.get('user_id')})")
+                    found = True
+                    break
+            if not found:
+                logger.warning(f"在联系人列表中未找到用户白名单中的: '{name}'")
+        
+        return whitelisted_items
 
     def send(self, reply: Any, context: Dict[str, Any]):
         """发送消息 (仅Hook模式支持)"""

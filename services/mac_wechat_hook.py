@@ -105,19 +105,30 @@ class MacWeChatHook:
         decrypted_db_dir.mkdir(parents=True, exist_ok=True)
         decrypted_path = decrypted_db_dir / f"{db_path.name}.decrypted"
 
-        if decrypted_path.exists():
-            try:
-                if decrypted_path.stat().st_mtime > db_path.stat().st_mtime:
-                    logger.info(f"使用已存在的有效解密缓存: {decrypted_path}")
-                    return decrypted_path
-            except FileNotFoundError: pass
+        # 移除基于文件修改时间的缓存检查，因为它在WAL模式下不可靠。
+        # 每次都执行完整的解密流程，以确保数据最新。
 
-        temp_encrypted_path = decrypted_db_dir / f"{db_path.name}.temp_encrypted"
+        # 为本次解密操作创建一个临时目录，确保环境干净
+        temp_decryption_dir = decrypted_db_dir / f"temp_{db_path.name}"
+        if temp_decryption_dir.exists():
+            shutil.rmtree(temp_decryption_dir)
+        temp_decryption_dir.mkdir()
+        
+        temp_encrypted_path = temp_decryption_dir / db_path.name
+        
         try:
+            # 关键修复：拷贝主数据库文件及其对应的-wal和-shm文件
             shutil.copy2(db_path, temp_encrypted_path)
-            # ... (omitting WAL/SHM file copy for brevity)
             
-            logger.info(f"正在尝试解密 {db_path.name}...")
+            wal_file = db_path.with_suffix('.db-wal')
+            if wal_file.exists():
+                shutil.copy2(wal_file, temp_decryption_dir / wal_file.name)
+
+            shm_file = db_path.with_suffix('.db-shm')
+            if shm_file.exists():
+                shutil.copy2(shm_file, temp_decryption_dir / shm_file.name)
+            
+            logger.info(f"正在尝试解密 {db_path.name} (包含WAL文件)...")
             conn = sqlcipher.connect(str(temp_encrypted_path))
             conn.execute(f"PRAGMA key = \"x'{self.db_key}'\"")
             for line in SQLCIPHER3_DEFAULTS_CONFIG:
@@ -142,7 +153,9 @@ class MacWeChatHook:
             logger.error(f"解密失败: {e}")
             return None
         finally:
-            if temp_encrypted_path.exists(): temp_encrypted_path.unlink()
+            # 清理临时解密目录
+            if temp_decryption_dir.exists():
+                shutil.rmtree(temp_decryption_dir)
 
     def _unpack_contact_data(self, packed_data: bytes) -> Dict[str, Any]:
         """

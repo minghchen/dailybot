@@ -95,9 +95,10 @@ class MacWeChatService:
 
             if not self._contacts_cache:
                  logger.warning("未能从任何联系人或群组数据库中解析出数据。")
-            else:
-                # 构建群聊ID到聊天表的映射
-                self._build_group_to_table_map()
+            # else:
+            #     # 构建群聊ID到聊天表的映射过程已被移除，因为它是不必要的。
+            #     # 当前代码通过MD5哈希直接计算表名，不再需要此映射。
+            #     # self._build_group_to_table_map()
 
             logger.info(f"成功加载 {len(self.msg_db_managers)} 个消息库和 {len(self._contacts_cache)} 个联系人/群组。")
             return True
