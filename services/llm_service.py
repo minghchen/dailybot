@@ -17,14 +17,6 @@ from pydantic import Field, BaseModel
 # 使用Instructor对OpenAI客户端进行增强
 # 这使得 .chat.completions.create 方法可以返回Pydantic模型
 
-class StructuredNote(BaseModel):
-    """结构化的笔记内容模型"""
-    date: str = Field(..., description="根据文章内容或当前日期，生成的年月格式，如 '2025.06'。")
-    title: str = Field(..., description="文章的完整、准确的标题。")
-    link_title: str = Field(..., description="适合用作超链接文本的简洁标题，通常与主标题相同或为其缩写。")
-    summary: str = Field(..., description="对文章核心内容的客观总结，最多5句话。**请务必使用中文进行总结**。对话上下文仅用于启发总结的侧重点，总结本身不应提及对话。")
-
-
 class LLMService:
     """LLM服务类"""
     
@@ -127,43 +119,6 @@ class LLMService:
             
         except Exception as e:
             logger.error(f"LLM请求失败: {e}", exc_info=True)
-            raise
-    
-    async def generate_structured_note(self, article_content: str, conversation_context: str) -> StructuredNote:
-        """
-        使用LLM和Instructor生成结构化的笔记内容。
-
-        Args:
-            article_content: 从链接中提取的文章或网页内容。
-            conversation_context: 围绕该链接的对话上下文。
-
-        Returns:
-            一个包含日期、标题、链接标题和摘要的Pydantic模型实例。
-        """
-        prompt = f"""
-你的任务是根据提供的文章内容和相关的对话上下文，生成一份结构化的笔记。
-
-[对话上下文（仅供参考，用于理解文章的关注点）]
-{conversation_context}
-
-[文章内容]
-{article_content[:10000]}
-
-请严格按照要求的格式，提取或生成笔记的各个部分。
-"""
-        try:
-            note = await self.aclient.chat.completions.create(
-                model=self.model,
-                response_model=StructuredNote,
-                messages=[
-                    {"role": "user", "content": prompt},
-                ],
-                max_retries=2,
-            )
-            logger.info("LLM成功生成了结构化笔记。")
-            return note
-        except Exception as e:
-            logger.error(f"使用Instructor生成结构化笔记失败: {e}", exc_info=True)
             raise
     
     async def generate_embedding(self, text: str) -> List[float]:

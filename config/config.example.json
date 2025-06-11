@@ -37,7 +37,11 @@
     "proxy": ""
   },
   
-  "note_backend": "google_docs",
+  "note_backend": "obsidian",
+  
+  "note_management": {
+    "classification_strategy": "balanced"
+  },
   
   "obsidian": {
     "vault_path": "/path/to/your/vault",
@@ -79,6 +83,11 @@
     "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
     "silent_mode": true,
     "max_summary_length": 500
+  },
+  
+  "agent": {
+    "enabled": true,
+    "max_decision_content": 4000
   },
   
   "rag": {

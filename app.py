@@ -23,6 +23,8 @@ from bot.message_handler import MessageHandler
 from services.llm_service import LLMService
 from services.note_manager import NoteManager
 from services.rag_service import RAGService
+from services.content_extractor import ContentExtractor
+from services.agent_service import AgentService
 from utils.config_loader import ConfigLoader
 
 
@@ -57,6 +59,8 @@ class DailyBot:
         self.llm_service = None
         self.note_manager = None
         self.rag_service = None
+        self.agent_service = None
+        self.content_extractor = None
         self.running = False
         
     def load_config(self):
@@ -127,7 +131,25 @@ class DailyBot:
             else:
                 self.rag_service = None
 
-            # 检查并初始化消息处理器
+            # 新的服务初始化流程
+            # 1. 初始化内容提取器
+            self.content_extractor = ContentExtractor(
+                config=self.config, llm_service=self.llm_service
+            )
+            logger.info("内容提取器初始化成功")
+
+            # 2. 初始化Agent服务，并注入提取器
+            self.agent_service = AgentService(
+                config=self.config,
+                llm_service=self.llm_service,
+                content_extractor=self.content_extractor
+            )
+            logger.info("智能代理服务初始化成功")
+
+            # 3. 将Agent服务注入回内容提取器，解决循环依赖
+            self.content_extractor.set_agent_service(self.agent_service)
+
+            # 4. 初始化消息处理器，并注入内容提取器
             if 'content_extraction' not in self.config:
                 logger.error("配置文件中缺少 'content_extraction' 配置项。")
                 sys.exit(1)
@@ -135,6 +157,7 @@ class DailyBot:
                 config=self.config,
                 llm_service=self.llm_service,
                 note_manager=self.note_manager,
+                content_extractor=self.content_extractor,
                 rag_service=self.rag_service
             )
             logger.info("消息处理器初始化成功")

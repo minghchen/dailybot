@@ -178,6 +178,43 @@ class NoteManager:
     
     async def _decide_insertion_location_with_llm(self, content_data: Dict[str, Any], doc_structure: Dict[str, Any]) -> InsertionDecision:
         """第二步决策：调用LLM来决定新内容在文件内的最佳插入位置。"""
+        # --- 根据配置选择分类策略 ---
+        strategy_key = self.config.get('note_management', {}).get('classification_strategy', 'balanced')
+        
+        strategy_instructions = {
+            "cautious_filer": """
+# Role: 你是一位极其谨慎的档案管理员，首要任务是避免错误分类。
+
+1.  **第一优先级 (insert_into_miscellaneous)**: 这是你的默认和首选操作。除非满足下一条的**严格**条件，否则总是将内容放入最相关父标题下的"其他"分类中。
+2.  **第二优先级 (insert_under_leaf)**: 只有当新内容的主题与某个"叶子节点"的标题**完全一致或主题高度重合**时，才允许你将内容放入该叶子节点下。如果你有任何一丝犹豫，就退回使用第一优先级。
+3.  **第三优先级 (create_new_subheading)**: **（严格禁止）** 绝对不要创建新的子标题。
+""",
+            "diligent_categorizer": """
+# Role: 你是一位勤奋的图书管理员，目标是尽可能地将每一份资料都精准归档到现有的分类中。
+
+1.  **第一优先级 (insert_under_leaf)**: 请尽你最大的努力，在"叶子节点列表"中寻找一个**最相关**的现有标题，即使主题不是100%完全匹配，只要它是最合理的归宿即可。这是你的首要目标。
+2.  **第二优先级 (insert_into_miscellaneous)**: 仅当你在所有叶子节点中都**找不到任何一个**合适的归宿时，才允许将内容放入相关父标题的"其他"分类中。
+3.  **第三优先级 (create_new_subheading)**: **（几乎不用）** 只有在内容与所有现有分类都完全无关，且确实需要一个全新分类时，才考虑此选项。
+""",
+            "balanced": """
+# Role: 你是一位经验丰富的图书管理员，追求效率和结构之间的平衡。
+
+1.  **第一优先级 (insert_under_leaf)**: 检查新内容是否与"叶子节点列表"中的某个标题主题**高度匹配**。如果是，这是最优先的选择。
+2.  **第二优先级 (insert_into_miscellaneous)**: 如果找不到高度匹配的叶子，将内容放入最相关父标题的"其他"分类中，这是一个安全的选择。
+3.  **第三优先级 (create_new_subheading)**: 如果内容确实代表了一个在父标题下非常重要且**缺失**的子分类，可以创建一个新的子标题来优化结构。请不要轻易使用此选项。
+""",
+            "aggressive": """
+# Role: 你是一位富有远见的架构师，目标是主动构建和优化知识库的结构。
+
+1.  **第一优先级 (create_new_subheading)**: 新内容是否可以作为一个现有标题下的、逻辑清晰的**新子分类**？如果是，请大胆地创建新子标题，这是丰富文档结构的最佳方式。
+2.  **第二优先级 (insert_under_leaf)**: 如果无法创建有意义的新子标题，再检查内容是否与某个已有的"叶子节点"**高度匹配**。
+3.  **第三优先级 (insert_into_miscellaneous)**: 仅当内容与整个文档结构都无关时，才使用此选项。
+"""
+        }
+        
+        selected_instructions = strategy_instructions.get(strategy_key, strategy_instructions['balanced'])
+        logger.info(f"正在使用 '{strategy_key}' 分类策略。")
+
         tree_str = self._format_headings_as_tree(doc_structure['headings'])
         title = content_data.get('structured_note', {}).get('title', '')
         summary = content_data.get('structured_note', {}).get('summary', '')
@@ -188,7 +225,10 @@ class NoteManager:
         leaf_nodes_str = "\n".join([f"- {node['text']}" for node in leaf_nodes]) or "无"
 
         prompt = f"""
-你是一位严谨的图书管理员，你的任务是根据一份现有文档的目录结构，将一份新内容精准地归类。请遵循最保守、最稳定的分类策略。
+你是一位图书管理员，你的任务是根据一份现有文档的目录结构，将一份新内容精准地归类。
+你的行为模式由你的角色决定，请严格遵循。
+
+{selected_instructions}
 
 [文档现有目录结构]
 ```
@@ -201,11 +241,6 @@ class NoteManager:
 [待插入的新内容]
 - 标题: {title}
 - 摘要: {summary}
-
-[你的决策层级（请严格遵守）]
-1.  **第一优先级 (insert_under_leaf)**: 检查新内容是否与上述"叶子节点列表"中的某个标题主题**高度匹配**。如果是，请选择此项，并将内容放入该叶子节点下。这是最优先的选项。
-2.  **第二优先级 (insert_into_miscellaneous)**: 如果内容与任何叶子节点都不匹配，请找到一个最相关的**父标题**，并将内容放入该父标题下的"其他"分类中。
-3.  **第三优先级 (create_new_subheading)**: **（仅在绝对必要时使用）** 如果内容确实代表了一个在父标题下非常重要且**缺失**的子分类，才允许创建一个新的、有意义的子标题。请**不要**轻易使用此选项，也**禁止**使用文章标题作为新标题。
 
 [注意]
 - **禁止创建新的一级标题**，除非文档完全为空。

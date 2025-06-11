@@ -8,7 +8,7 @@
 import re
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from loguru import logger
 import requests
 from bs4 import BeautifulSoup
@@ -17,6 +17,10 @@ from playwright.async_api import async_playwright
 import html
 
 from utils.video_summarizer import BilibiliSummarizer
+
+# 仅在类型检查时导入，以避免循环导入
+if TYPE_CHECKING:
+    from services.agent_service import AgentService
 
 
 class ContentExtractor:
@@ -35,11 +39,17 @@ class ContentExtractor:
         self.llm_service = llm_service
         self.reader_base_url = "https://r.jina.ai/"
         self.jina_api_key = config.get('jina', {}).get('api_key')
+        self.agent_service: Optional['AgentService'] = None
         logger.info("内容提取器初始化成功，将使用Jina AI Reader。")
 
     def set_message_handler(self, handler: Any):
         """注入消息处理器实例"""
         self.message_handler = handler
+
+    def set_agent_service(self, agent_service: 'AgentService'):
+        """注入Agent服务实例"""
+        self.agent_service = agent_service
+        logger.info("AgentService 已成功注入到 ContentExtractor。")
 
     def _parse_links_from_xml(self, xml_string: str) -> List[str]:
         """
@@ -206,7 +216,7 @@ class ContentExtractor:
                         desc = finder_feed.find('desc').text.strip() if finder_feed.find('desc') else '无描述'
                         object_id = finder_feed.find('objectId').text if finder_feed.find('objectId') else ''
                         
-                        title = f"来自“{nickname}”的视频号分享"
+                        title = f'来自"{nickname}"的视频号分享'
                         content_info = {'title': title, 'content': desc}
                         
                         url = f"wechat_channels_{object_id}" 
@@ -246,12 +256,19 @@ class ContentExtractor:
 
             # 使用LLM生成自然的对话上下文
             conversation_context = await self._build_context_with_llm(msg, context_messages)
-            
-            # 使用LLM生成结构化的笔记内容
-            structured_note = await self.llm_service.generate_structured_note(
-                article_content=content_info['content'],
-                conversation_context=conversation_context
-            )
+
+            # <<<< 新的Agent调用逻辑 >>>>
+            if self.agent_service:
+                # 调用Agent Service处理从决策到生成结构化笔记的完整流程
+                structured_note = await self.agent_service.process_content_to_note(
+                    original_content=content_info['content'],
+                    conversation_context=conversation_context
+                )
+            else:
+                # 如果Agent不存在，提供一个错误或回退机制
+                logger.error("AgentService未初始化，无法生成结构化笔记。")
+                return None
+            # <<<< Agent调用逻辑结束 >>>>
             
             result = {
                 'url': url,
@@ -272,22 +289,25 @@ class ContentExtractor:
         """
         使用LLM将原始聊天记录生成为一段自然的、可读的对话摘要。
         """
-        # 1. 收集所有相关的原始消息文本
-        raw_texts = []
+        # 1. 收集所有相关的原始消息文本，并附上时间戳
+        raw_texts_with_ts = []
         all_msgs = surrounding_msgs + [main_msg]
         all_msgs.sort(key=lambda x: x.get('create_time', 0))
 
         for m in all_msgs:
-            raw_texts.append(m.get('Text', ''))
+            # 兼容不同来源的时间戳字段
+            ts = m.get('CreateTime') or m.get('create_time', 0)
+            formatted_time = datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+            raw_texts_with_ts.append(f"[{formatted_time}] {m.get('Text', '')}")
         
-        full_raw_context = "\n---\n".join(raw_texts)
+        full_raw_context = "\n---\n".join(raw_texts_with_ts)
 
         # 2. 构建prompt
-        prompt = f"""你是一个对话摘要专家。下面是一些原始的聊天记录片段，其中可能包含复杂的XML格式。
+        prompt = f"""你是一个对话摘要专家。下面是一些带有时间戳的原始聊天记录片段，其中可能包含复杂的XML格式。
 你的任务是：
 1. 阅读并理解这些聊天记录。
-2. 将它们转换成一段格式化的文本摘要，格式为："A说:...; B说:...; C说:..."。
-3. 不要对对话内容做任何简化，保持原始对话的完整性。
+2. 将它们转换成一段格式化的文本摘要，格式为："[时间] A说: ...; [时间] B说: ...;"。
+3. **必须保留每句话前面的时间戳**，这是重要的上下文。
 4. 忽略无关的XML标签，只提取关键的人物和对话内容。
 5. 如果内容含有引用，请表述为"A引用B的话说:..."。
 
@@ -305,4 +325,4 @@ class ContentExtractor:
             return formatted_context.strip()
         except Exception as e:
             logger.error(f"使用LLM生成上下文失败: {e}，将返回原始文本。")
-            return full_raw_context # 失败时回退到原始文本 
+            return full_raw_context # 失败时回退到原始文本

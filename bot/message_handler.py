@@ -28,11 +28,13 @@ class MessageHandler:
     """消息处理器"""
     
     def __init__(self, config: Dict[str, Any], llm_service: LLMService,
-                 note_manager: NoteManager, rag_service: Optional[RAGService] = None):
+                 note_manager: NoteManager, content_extractor: ContentExtractor, 
+                 rag_service: Optional[RAGService] = None):
         self.config = config
         self.llm_service = llm_service
         self.note_manager = note_manager
         self.rag_service = rag_service
+        self.content_extractor = content_extractor # 接收注入的实例
         self.channel = None  # 将在启动后通过set_channel注入
 
         # 通道特定配置
@@ -47,11 +49,7 @@ class MessageHandler:
         self.whitelist_file = Path(self.config.get('system', {}).get('whitelist_file', 'config/group_whitelist.json'))
         self._load_whitelist()
 
-        # 初始化内容提取器
-        self.content_extractor = ContentExtractor(
-            config=self.config,
-            llm_service=self.llm_service
-        )
+        # 注入对自身的引用到 content_extractor
         self.content_extractor.set_message_handler(self)
 
         # 历史处理器将在set_channel中初始化

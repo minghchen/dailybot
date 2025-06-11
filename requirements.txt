@@ -14,7 +14,7 @@ tiktoken>=0.5.1
 
 # 文档处理
 pypdf>=3.17.0
-beautifulsoup4>=4.12.2
+beautifulsoup4>=4.12.3
 requests>=2.31.0
 lxml>=4.9.3
 
@@ -39,11 +39,11 @@ googleapis-common-protos==1.63.1
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 pytz>=2023.3
-aiohttp>=3.9.1
+aiohttp==3.9.5
 asyncio>=3.4.3
 
 # 日志和监控
-loguru>=0.7.2
+loguru==0.7.2
 colorlog>=6.8.0
 
 # 数据处理
@@ -77,3 +77,7 @@ pyasn1-modules==0.4.0
 oauthlib==3.2.2
 instructor
 playwright google-api-python-client-discovery
+
+# New dependencies
+duckduckgo-search==5.3.1b1
+Pillow==10.3.0

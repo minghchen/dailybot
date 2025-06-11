@@ -268,7 +268,8 @@ python app.py
     "single_chat_prefix": ["bot", "@bot"],   // 私聊/Hook模式触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊/Hook模式触发前缀
     "group_name_white_list": [],             // 群聊白名单
-    "user_name_white_list": []               // 用户白名单
+    "user_name_white_list": [],               // 用户白名单
+    "message_retention_days": 30             // 消息保留天数
   },
   
   "openai": {
@@ -291,6 +292,10 @@ python app.py
   },
   
   "note_backend": "obsidian",  // 笔记后端：obsidian | google_docs
+  
+  "note_management": {
+    "classification_strategy": "balanced" // 分类策略: diligent_categorizer (努力归档), cautious_filer (谨慎归档), balanced (均衡), aggressive (激进)
+  },
   
   "obsidian": {
     "vault_path": "/path/to/your/vault",     // Obsidian仓库路径
@@ -331,6 +336,11 @@ python app.py
     "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
     "silent_mode": true,                     // 静默模式
     "max_summary_length": 500                // 最大总结长度
+  },
+  
+  "agent": {
+    "enabled": true,                         // 是否启用智能代理（自动搜索增强）
+    "max_decision_content": 4000             // 用于决策的原始内容最大字符数
   },
   
   "rag": {
