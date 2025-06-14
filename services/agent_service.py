@@ -275,6 +275,7 @@ class AgentService:
         try:
             note = await self.llm_service.aclient.chat.completions.create(
                 model=self.llm_service.chat_model,
+
                 response_model=StructuredNote,
                 messages=[
                     # 为模型提供一个高质量的输入输出范例

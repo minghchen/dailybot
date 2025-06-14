@@ -79,6 +79,7 @@ instructor
 playwright 
 google-api-python-client-discovery
 
+
 # New dependencies
 duckduckgo-search==5.3.1b1
 Pillow==10.3.0

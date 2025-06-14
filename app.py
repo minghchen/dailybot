@@ -117,6 +117,7 @@ class DailyBot:
             
             # 检查并初始化RAG服务
             if self.config['openai'].get('rag', {}).get('enabled'):
+
                 if 'rag' not in self.config:
                     logger.error("配置文件中缺少 'rag' 配置项。")
                     sys.exit(1)
