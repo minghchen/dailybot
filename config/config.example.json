@@ -31,9 +31,7 @@
   
   "openai": {
     "model": "gpt-4.1",
-    "temperature": 0.7,
-    "max_completion_tokens": 5000,
-    "proxy": ""
+    "temperature": 0.7
   },
   
   "note_backend": "obsidian",
@@ -97,11 +95,6 @@
     "chunk_overlap": 200,
     "top_k": 5,
     "similarity_threshold": 0.7
-  },
-  
-  "bilibili": {
-    "summarizer_api": "",
-    "cookies": ""
   },
   
   "system": {

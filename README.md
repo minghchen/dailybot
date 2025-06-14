@@ -276,8 +276,6 @@ python app.py
     // API密钥和base_url从环境变量读取
     "model": "gpt-4.1",                  // 使用的模型
     "temperature": 0.7,                      // 生成温度
-    "max_completion_tokens": 5000,           // 最大生成长度
-    "proxy": ""                              // 代理设置（可选）
   },
   
   "note_backend": "obsidian",  // 笔记后端：obsidian | google_docs
@@ -340,11 +338,6 @@ python app.py
     "chunk_overlap": 200,
     "top_k": 5,
     "similarity_threshold": 0.7
-  },
-  
-  "bilibili": {
-    "summarizer_api": "",                    // B站视频总结API
-    "cookies": ""                            // B站cookies
   },
   
   "system": {

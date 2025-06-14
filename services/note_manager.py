@@ -74,13 +74,19 @@ class NoteManager:
         Args:
             content_data: 从ContentExtractor提取并处理过的内容数据。
         """
+        # --- 新增：健壮性检查 ---
+        structured_note = content_data.get('structured_note')
+        if not structured_note:
+            logger.warning("接收到的内容数据中不包含有效的'structured_note'，跳过保存。")
+            return
+            
         if not self.backend_manager:
             logger.error("没有可用的笔记后端管理器，无法保存内容。")
             return
         
         # 步骤 1: 全局查重
         if await self._check_for_duplicates(content_data):
-            log_title = content_data.get('structured_note', {}).get('title', '未知标题')
+            log_title = structured_note.get('title', '未知标题')
             logger.info(f"内容 '{log_title}' 已在笔记库中存在，跳过保存。")
             return
 
@@ -89,7 +95,7 @@ class NoteManager:
             # TODO: 在此可以实现一个不依赖LLM的简单保存逻辑作为后备
             return
 
-        logger.info(f"NoteManager开始处理内容 '{content_data.get('structured_note', {}).get('title', '')}'，后端: {self.note_backend_name}")
+        logger.info(f"NoteManager开始处理内容 '{structured_note.get('title', '')}'，后端: {self.note_backend_name}")
         
         try:
             # --- 步骤 2: 使用LLM选择目标笔记文件 ---

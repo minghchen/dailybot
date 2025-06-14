@@ -114,7 +114,7 @@ class ContentExtractor:
                         "url": url,
                         "engine": "cf-browser-rendering"
                     }
-                    async with session.post(reader_post_url, json=payload, headers=headers, timeout=180) as response:
+                    async with session.post(reader_post_url, json=payload, headers=headers, timeout=200) as response:
                         if response.status == 200:
                             json_response = await response.json()
                             logger.debug(f"Jina Reader (POST) 响应: {json_response}")
@@ -127,7 +127,7 @@ class ContentExtractor:
                 else:
                     # 对于其他链接，使用GET方法
                     reader_get_url = f"https://r.jina.ai/{url}"
-                    async with session.get(reader_get_url, headers=headers, timeout=120) as response:
+                    async with session.get(reader_get_url, headers=headers, timeout=200) as response:
                         if response.status == 200:
                             json_response = await response.json()
                             logger.debug(f"Jina Reader (GET) 响应: {json_response}")
@@ -156,7 +156,7 @@ class ContentExtractor:
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 logger.debug(f"正在请求Bilibili URL: {url}")
-                async with session.get(url, allow_redirects=True, timeout=20) as response:
+                async with session.get(url, allow_redirects=True, timeout=200) as response:
                     if response.status != 200:
                         logger.error(f"请求Bilibili链接失败，状态码: {response.status}, 最终URL: {response.url}")
                         return None
@@ -264,6 +264,10 @@ class ContentExtractor:
                     original_content=content_info['content'],
                     conversation_context=conversation_context
                 )
+                # 如果Agent判断内容不相关，则中止流程
+                if structured_note is None:
+                    logger.info(f"Agent服务判断内容不相关或无价值，中止提取流程。URL: {url}")
+                    return None
             else:
                 # 如果Agent不存在，提供一个错误或回退机制
                 logger.error("AgentService未初始化，无法生成结构化笔记。")

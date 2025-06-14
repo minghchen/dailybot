@@ -30,7 +30,7 @@ class LLMService:
         self.config = config
         self.model = config.get('model', 'gpt-4.1')
         self.temperature = config.get('temperature', 0.7)
-        self.max_completion_tokens = config.get('max_completion_tokens', 5000)
+        self.max_completion_tokens = 3000
         
         # 初始化OpenAI客户端
         self.aclient = instructor.patch(AsyncOpenAI(

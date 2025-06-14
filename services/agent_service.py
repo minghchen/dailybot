@@ -43,6 +43,13 @@ class DirectSummarize(BaseModel):
     """
     reason: str = Field(..., description="为什么选择直接总结的简要原因。例如'文章本身是观点性博客'或'内容是完整的新闻报道'。")
 
+class IrrelevantContent(BaseModel):
+    """
+    当内容与AI研究或AI资讯无关，或内容无实质信息（如单纯的会议链接、推广活动）时使用此工具。
+    这将中止后续的处理流程。
+    """
+    reason: str = Field(..., description="判断内容不相关或无实质信息的简要原因。例如'内容是腾讯会议链接'或'内容是营销广告'。")
+
 
 class AgentService:
     """智能代理服务类"""
@@ -61,7 +68,7 @@ class AgentService:
         self.content_extractor = content_extractor
         logger.info("智能代理服务初始化成功。")
 
-    async def process_content_to_note(self, original_content: str, conversation_context: str) -> StructuredNote:
+    async def process_content_to_note(self, original_content: str, conversation_context: str) -> Optional[StructuredNote]:
         """
         处理原始内容，通过决策、丰富、总结的完整流程，生成结构化笔记。
 
@@ -70,10 +77,14 @@ class AgentService:
             conversation_context: 围绕该链接的对话上下文。
 
         Returns:
-            一个结构化的笔记Pydantic模型。
+            一个结构化的笔记Pydantic模型，或在内容被判断为不相关时返回None。
         """
         # 1. 决策并可能地丰富内容
         content_for_summary = await self._decide_and_enrich(original_content)
+
+        if content_for_summary is None:
+            logger.info("内容被判断为不相关或无价值，处理流程终止。")
+            return None
         
         # 2. 使用最终内容生成结构化笔记
         structured_note = await self.generate_structured_note(
@@ -82,9 +93,10 @@ class AgentService:
         )
         return structured_note
 
-    async def _decide_and_enrich(self, original_content: str) -> str:
+    async def _decide_and_enrich(self, original_content: str) -> Optional[str]:
         """
         分析原始内容，决定是直接总结还是先搜索再总结，并返回最终用于总结的文本。
+        如果内容不相关，则返回None。
         （原 decide_and_enrich 方法，现在是私有方法）
         """
         if not self.config.get("agent", {}).get("enabled", True):
@@ -96,10 +108,11 @@ class AgentService:
         content_for_decision = original_content[:self.config.get("agent", {}).get("max_decision_content", 4000)]
 
         prompt = f"""
-你是一个智能分析师。你的任务是阅读下面的文章内容，并决定如何最好地处理它。你有两个选择：
+你是一个智能分析师。你的任务是阅读下面的文章内容，并决定如何最好地处理它。你有三个选择：
 
 1.  **搜索并总结 (SearchAndSummarize)**: 如果文章内容主要是对另一个核心资源的介绍、评论或摘要（例如一篇论文、一个GitHub项目、一个特定的开源模型），你应该使用这个工具。你需要从文章中提取出那个核心资源的最准确的名称作为搜索词。
-2.  **直接总结 (DirectSummarize)**: 如果文章本身就是信息的主要来源（例如一篇完整的博客文章、一篇新闻报道、一篇观点性文章），你应该使用这个工具。
+2.  **直接总结 (DirectSummarize)**: 如果文章本身就是信息的主要来源（例如一篇完整的博客文章、一篇新闻报道、一篇观点性文章），并且内容与AI研究或AI技术资讯相关，你应该使用这个工具。
+3.  **内容不相关 (IrrelevantContent)**: 如果文章内容与AI研究或AI技术资讯**完全无关**，或者没有信息含量（例如只是一个会议链接、一封营销邮件、一个广告页面），你应该使用这个工具。
 
 请根据下面的文章内容，选择最合适的工具。
 
@@ -109,7 +122,7 @@ class AgentService:
         try:
             decision = await self.llm_service.aclient.chat.completions.create(
                 model=self.llm_service.model,
-                response_model=Union[SearchAndSummarize, DirectSummarize],
+                response_model=Union[SearchAndSummarize, DirectSummarize, IrrelevantContent],
                 messages=[
                     {"role": "user", "content": prompt},
                 ],
@@ -123,6 +136,10 @@ class AgentService:
             elif isinstance(decision, DirectSummarize):
                 logger.info(f"代理决策: [直接总结]，原因: '{decision.reason}'")
                 return original_content
+
+            elif isinstance(decision, IrrelevantContent):
+                logger.info(f"代理决策: [内容不相关]，原因: '{decision.reason}'。终止处理。")
+                return None
 
         except Exception as e:
             logger.error(f"代理决策过程出错: {e}，将回退到直接总结。", exc_info=True)

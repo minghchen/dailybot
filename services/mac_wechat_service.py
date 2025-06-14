@@ -334,26 +334,103 @@ class MacWeChatService:
 
     def send_message(self, to_user: str, content: str) -> bool:
         """
-        发送消息（仅Hook模式）。通过AppleScript实现。
+        发送消息（仅Hook模式）。通过AppleScript的GUI脚本实现。
+        注意：此方法非常脆弱，严重依赖微信的UI布局。
         """
-        if not self.is_hook_mode:
+        if self.mode != 'hook':
             logger.warning("发送消息功能仅在Hook模式下可用。")
             return False
 
+        # 对内容进行转义，防止破坏AppleScript语法
+        escaped_content = content.replace('\\', '\\\\').replace('"', '\\"')
+
         script = f'''
-        tell application "WeChat"
-            activate
-            tell session "{to_user}"
-                send "{content}"
-            end tell
+on sendMessage(contactName, messageText)
+    tell application "System Events"
+        tell process "WeChat"
+            set frontmost to true
+            delay 0.5 -- 等待窗口激活
+
+            -- 步骤 1: 聚焦并清空搜索框
+            try
+                -- 使用 axtitle 描述来定位，可能更稳定
+                tell text field 1 of group 1 of splitter group 1 of window "微信"
+                    set focused to true
+                    set value to ""
+                    set value to contactName
+                end tell
+            on error
+                logger "无法找到搜索框，请检查UI布局"
+                return false
+            end try
+            
+            delay 1 -- 等待搜索结果出现
+
+            -- 步骤 2: 点击第一个搜索结果（通常是目标联系人）
+            try
+                -- 这里的层级可能需要根据实际情况调整
+                click at {150, 100} of window "微信" -- 这是一个示例坐标，实际可能需要更精确的定位
+                -- 更稳健的方式是查找UI元素
+                tell table 1 of scroll area 1 of splitter group 1 of window "微信"
+                    if exists (row 1) then
+                        click row 1
+                    else
+                        error "搜索结果中未找到行"
+                    end if
+                end tell
+            on error errMsg
+                logger "点击搜索结果失败: " & errMsg
+                return false
+            end try
+            
+            delay 0.5
+
+            -- 步骤 3: 在输入框中输入内容并发送
+            try
+                -- 定位输入框
+                tell text area 1 of splitter group 1 of splitter group 1 of window "微信"
+                    set value to messageText
+                end tell
+                keystroke return
+                
+                -- 清理：返回到主列表，避免影响下次操作
+                click button 1 of group 1 of splitter group 1 of window "微信"
+
+            on error errMsg
+                logger "输入或发送消息失败: " & errMsg
+                return false
+            end try
+            
+            return true
         end tell
+    end tell
+end sendMessage
+
+-- 调用函数
+sendMessage("{to_user}", "{escaped_content}")
         '''
         try:
-            subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
-            logger.info(f"通过AppleScript向 {to_user} 发送消息成功。")
-            return True
+            # 使用osascript执行，并通过-e传递脚本
+            process = subprocess.run(
+                ["osascript", "-e", script], 
+                check=True, 
+                capture_output=True, 
+                text=True,
+                timeout=20 # 增加超时以应对UI延迟
+            )
+            if "true" in process.stdout:
+                logger.info(f"通过AppleScript GUI脚本向 '{to_user}' 发送消息成功。")
+                return True
+            else:
+                logger.error(f"AppleScript脚本执行返回false，发送失败。脚本输出: {process.stdout} | {process.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"通过AppleScript发送消息超时。")
+            return False
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logger.error(f"通过AppleScript发送消息失败: {e.stderr if isinstance(e, subprocess.CalledProcessError) else e}")
+            error_output = e.stderr if isinstance(e, subprocess.CalledProcessError) else str(e)
+            logger.error(f"通过AppleScript发送消息失败: {error_output}")
             return False
 
     def add_message_handler(self, handler):
