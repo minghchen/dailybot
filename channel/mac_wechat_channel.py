@@ -29,7 +29,7 @@ class MacWeChatChannel(Channel):
         self.is_running = False
         self.message_callback = None
         
-        mac_config = self.config
+        mac_config = self.config.get('mac_wechat', {})
         
         # 根据配置决定运行模式
         self.mode = mac_config.get('mode', 'silent')
@@ -44,13 +44,16 @@ class MacWeChatChannel(Channel):
         self.poll_thread = None
         self.lock = Lock()
         self.state_file = Path.home() / ".dailybot/mac_channel_state.json"
+        # 从配置中分别获取群聊和用户的白名单
+        self.group_name_white_list = mac_config.get('group_name_white_list', [])
+        self.user_name_white_list = mac_config.get('user_name_white_list', [])
 
     def startup(self):
         """启动通道"""
         logger.info(f"正在启动 Mac WeChat Channel ({self.mode} Mode)...")
         
         try:
-            self.service = MacWeChatService()
+            self.service = MacWeChatService(self.config)
             if not self.service.initialize(use_hook_mode=self.use_hook_mode):
                 raise Exception(f"初始化Mac微信服务 ({self.mode} mode) 失败。请检查日志和配置。")
 
@@ -62,7 +65,11 @@ class MacWeChatChannel(Channel):
                 # 静默模式下，加载状态并启动轮询
                 self._load_state()
                 self.is_running = True
-                self.poll_thread = Thread(target=self._poll_messages)
+
+                # 执行一次初始轮询，以便立即提供反馈
+                self._poll_once()
+                
+                self.poll_thread = Thread(target=self._poll_loop)
                 self.poll_thread.daemon = True
                 self.poll_thread.start()
 
@@ -80,6 +87,48 @@ class MacWeChatChannel(Channel):
         except Exception as e:
             logger.error(f"Mac WeChat Channel 启动失败: {e}")
             self.is_running = False
+
+    def get_whitelisted_conversations(self) -> List[Dict[str, Any]]:
+        """
+        获取白名单中所有会话（群聊和个人）的详细信息。
+        这使得上层应用（如HistoryProcessor）可以统一处理所有白名单会话。
+        """
+        if not self.service:
+            logger.warning("服务未初始化，无法获取白名单会话。")
+            return []
+        
+        whitelisted_items = []
+        all_contacts = self.service.get_contacts()
+        if not all_contacts:
+            logger.warning("无法从服务中获取任何联系人信息。")
+            return []
+
+        # 1. 处理群聊白名单
+        for name in self.group_name_white_list:
+            found = False
+            for contact in all_contacts:
+                if contact.get('type') == 'group' and contact.get('nickname') == name:
+                    whitelisted_items.append(contact)
+                    logger.info(f"在群聊白名单中找到: '{name}' (ID: {contact.get('user_id')})")
+                    found = True
+                    break
+            if not found:
+                logger.warning(f"在联系人列表中未找到群聊白名单中的: '{name}'")
+                
+        # 2. 处理用户白名单
+        for name in self.user_name_white_list:
+            found = False
+            for contact in all_contacts:
+                # 只在好友类型中查找
+                if contact.get('type') == 'friend' and (contact.get('nickname') == name or contact.get('remark') == name):
+                    whitelisted_items.append(contact)
+                    logger.info(f"在用户白名单中找到: '{name}' (ID: {contact.get('user_id')})")
+                    found = True
+                    break
+            if not found:
+                logger.warning(f"在联系人列表中未找到用户白名单中的: '{name}'")
+        
+        return whitelisted_items
 
     def send(self, reply: Any, context: Dict[str, Any]):
         """发送消息 (仅Hook模式支持)"""
@@ -134,26 +183,46 @@ class MacWeChatChannel(Channel):
         except Exception as e:
             logger.error(f"保存状态文件失败: {e}")
 
-    def _poll_messages(self):
-        """轮询新消息 (静默模式)"""
+    def _poll_once(self):
+        """执行单次消息轮询"""
+        try:
+            with self.lock:
+                if not self.service:
+                    logger.warning("MacWeChatService尚未初始化，跳过轮询。")
+                    return
+
+                # 记录轮询开始时的时间戳，作为下一次轮询的起点。
+                # 这样可以确保时间窗口总是向前移动，避免卡在某个时间点。
+                next_poll_timestamp = int(time.time())
+
+                logger.info(f"正在检查自 {datetime.fromtimestamp(self.last_check_timestamp).strftime('%Y-%m-%d %H:%M:%S')} 以来的新消息...")
+                new_messages = self.service.get_new_messages_since(self.last_check_timestamp)
+
+                if new_messages:
+                    logger.info(f"发现 {len(new_messages)} 条新消息。")
+                    for msg in new_messages:
+                        self._process_message(msg, is_historical=True)
+                else:
+                    logger.info("没有发现新消息。")
+
+                # 无论是否找到消息，都将时间戳更新为本次轮询开始时记录的时间。
+                self.last_check_timestamp = next_poll_timestamp
+                logger.info(f"下次轮询将从 {datetime.fromtimestamp(self.last_check_timestamp).strftime('%Y-%m-%d %H:%M:%S')} 开始")
+                self._save_state()
+
+        except Exception as e:
+            logger.error(f"轮询消息时出错: {e}", exc_info=True)
+
+    def _poll_loop(self):
+        """轮询循环 (静默模式)"""
         while self.is_running:
             try:
-                with self.lock:
-                    if not self.service:
-                        time.sleep(self.poll_interval)
-                        continue
-                    new_messages = self.service.get_new_messages_since(self.last_check_timestamp)
-                    if new_messages:
-                        logger.info(f"发现 {len(new_messages)} 条新消息。")
-                        for msg in new_messages:
-                            self._process_message(msg, is_historical=True)
-                        self.last_check_timestamp = new_messages[-1]['create_time']
-                        self._save_state()
-                    else:
-                        logger.debug("没有新消息。")
+                logger.info(f"下一次轮询将在 {self.poll_interval} 秒后进行。")
+                time.sleep(self.poll_interval)
+                if self.is_running:
+                    self._poll_once()
             except Exception as e:
-                logger.error(f"轮询消息时出错: {e}", exc_info=True)
-            time.sleep(self.poll_interval)
+                logger.error(f"轮询线程发生意外错误: {e}", exc_info=True)
 
     def _on_message_received(self, raw_message: Dict):
         """处理Hook模式下的实时消息"""

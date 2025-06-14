@@ -14,7 +14,7 @@ tiktoken>=0.5.1
 
 # 文档处理
 pypdf>=3.17.0
-beautifulsoup4>=4.12.2
+beautifulsoup4>=4.12.3
 requests>=2.31.0
 lxml>=4.9.3
 
@@ -33,16 +33,17 @@ google-api-python-client>=2.100.0
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
 google-auth-httplib2>=0.1.1
+googleapis-common-protos==1.63.1
 
 # 工具类
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 pytz>=2023.3
-aiohttp>=3.9.1
+aiohttp==3.9.5
 asyncio>=3.4.3
 
 # 日志和监控
-loguru>=0.7.2
+loguru==0.7.2
 colorlog>=6.8.0
 
 # 数据处理
@@ -60,7 +61,24 @@ rich>=13.7.0
 aiosqlite>=0.19.0
 
 # Mac微信Hook功能依赖（仅macOS）
-# pysqlcipher3>=1.2.0  # 用于解密微信数据库，需要先安装sqlcipher: brew install sqlcipher
-pyobjc>=10.0  # 用于Objective-C桥接，仅macOS需要
+pysqlcipher3>=1.2.0  # 用于解密微信数据库，需要先安装sqlcipher: brew install sqlcipher
+# pyobjc>=10.0  # 用于Objective-C桥接，仅macOS需要
 
-pysqlcipher3 
+pysocks==1.7.1
+pydantic==2.8.2
+pytz==2024.1
+urllib3==2.2.2
+wcwidth==0.2.13
+websocket-client==1.8.0
+zipp==3.19.2
+pycryptodome
+pyasn1==0.6.0
+pyasn1-modules==0.4.0
+oauthlib==3.2.2
+instructor
+playwright 
+google-api-python-client-discovery
+
+# New dependencies
+duckduckgo-search==5.3.1b1
+Pillow==10.3.0

@@ -7,26 +7,29 @@
 ### 1. 自动信息提取与整理
 - 自动识别聊天记录中的链接（公众号文章、B站视频、arXiv论文等）
 - 提取链接前后1分钟内的对话上下文（通过消息持久化存储实现）
+- 采用 [Jina AI Reader](https://github.com/jina-ai/reader) 作为核心解析引擎，通过 `https://r.jina.ai/` API，能够稳定、高效地提取任何URL（包括微信公众号、B站、Arxiv及普通网页）的核心内容，并将其转换为对LLM友好的Markdown格式。
 - 使用LLM对内容进行智能总结（1-5句话精炼总结）
 - 自动分类并保存到笔记系统（支持Obsidian和Google Docs）
 - 智能去重，避免重复内容
 
-### 2. 智能问答
+### 2. 智能问答（非静默模式）
 - 个人聊天：以"bot"或"@bot"开头触发
 - 群组聊天：被@时触发
 - 基于RAG技术，从笔记库中检索相关内容后生成回答
 
-### 3. 群组白名单管理
-- 灵活的群组白名单配置，只有白名单中的群组才会启用功能
-- 支持动态添加/移除群组
-- 新群组加入时自动处理历史消息
-- 支持导入导出的聊天记录处理
+### 3. 白名单管理
+- **灵活的白名单配置**：可以分别设置群聊白名单和个人用户白名单。
+- 只有白名单中的群聊或个人用户的消息才会被处理。
+- 支持通过指令动态管理白名单。
+- 新会话加入时自动处理历史消息。
 
-### 4. 动态分类管理
-- 支持多个笔记文件配置（每个文件可以有不同主题）
-- LLM智能选择合适的笔记文件和类别
-- 自动扫描笔记文件中的现有类别
-- 在合适的类别下插入新内容，或创建新类别
+### 4. 智能层级分类管理
+- **动态层级分析**: 能够解析笔记后端（如 Google Docs）的完整标题结构（H1, H2, H3 等），形成一个层级树。
+- **LLM 决策**: 基于对新内容和现有标题层级树的理解，LLM能够智能决策：
+  - 将内容插入到最合适的现有标题下（无论层级）。
+  - 在现有标题下创建一个逻辑相关的子标题来存放内容。
+  - 当内容主题是全新的时，在顶层创建新的一级标题。
+- **自动化组织**: 实现笔记的"自组织"，无需任何手动分类或配置。
 
 ### 5. 技术特点
 - 支持三种微信通道：JS Wechaty（跨平台）、wcf（Windows）和Mac微信（macOS）
@@ -110,7 +113,6 @@ dailybot/
 │   ├── mac_wechat_service.py   # Mac微信服务
 │   └── rag_service.py          # RAG服务
 ├── utils/                      # 工具类
-│   ├── link_parser.py          # 链接解析器
 │   ├── time_utils.py           # 时间工具
 │   ├── video_summarizer.py     # 视频总结工具
 │   └── message_storage.py      # 消息持久化存储
@@ -208,6 +210,9 @@ pip install -r requirements.txt
   OPENAI_API_KEY=你的OpenAI_API密钥
   OPENAI_BASE_URL=https://api.openai.com/v1
   
+  # Jina AI Reader API Key (用于微信公众号等复杂页面提取)
+  JINA_API_KEY=你的Jina_API密钥
+
   # Mac微信通道（静默模式）配置
   WECHAT_DB_KEY=你的64位数据库密钥
   
@@ -240,7 +245,8 @@ python app.py
     "ws_url": "ws://localhost:8788",         // WebSocket服务地址
     "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊触发前缀
-    "group_name_white_list": [],             // 群组白名单
+    "group_name_white_list": [],             // 群聊白名单
+    "user_name_white_list": [],              // 用户白名单
     "message_limit_per_minute": 20,          // 每分钟消息限制
     "min_reply_delay": 2,                    // 最小回复延迟（秒）
     "max_reply_delay": 5                     // 最大回复延迟（秒）
@@ -250,7 +256,8 @@ python app.py
   "wcf": {
     "single_chat_prefix": ["bot", "@bot"],   // 私聊触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊触发前缀
-    "group_name_white_list": [],             // 群组白名单
+    "group_name_white_list": [],             // 群聊白名单
+    "user_name_white_list": [],              // 用户白名单
     "group_at_sender": true                  // 群聊是否@发送者
   },
   
@@ -260,42 +267,48 @@ python app.py
     "poll_interval": 60,                     // 静默模式轮询间隔（秒）
     "single_chat_prefix": ["bot", "@bot"],   // 私聊/Hook模式触发前缀
     "group_chat_prefix": ["@bot"],           // 群聊/Hook模式触发前缀
-    "group_name_white_list": []             // 群组白名单
+    "group_name_white_list": [],             // 群聊白名单
+    "user_name_white_list": [],               // 用户白名单
+    "message_retention_days": 30             // 消息保留天数
   },
   
   "openai": {
     // API密钥和base_url从环境变量读取
-    "model": "gpt-4o-mini",                  // 使用的模型
+    "model": "gpt-4.1",                  // 使用的模型
     "temperature": 0.7,                      // 生成温度
-    "max_tokens": 2000,                      // 最大生成长度
-    "conversation_max_tokens": 1000,         // 对话历史最大长度
-    "proxy": ""                              // 代理设置（可选）
   },
   
   "note_backend": "obsidian",  // 笔记后端：obsidian | google_docs
   
+  "note_management": {
+    "classification_strategy": "balanced" // 分类策略: diligent_categorizer (努力归档), cautious_filer (谨慎归档), balanced (均衡), aggressive (激进)
+  },
+  
   "obsidian": {
     "vault_path": "/path/to/your/vault",     // Obsidian仓库路径
-    "daily_notes_folder": "Daily Notes",     // 日记文件夹
-    "knowledge_base_folder": "Knowledge Base", // 知识库文件夹
-    "template_path": "Templates/Daily Note Template.md", // 日记模板路径
-    "note_files": [                          // 笔记文件配置（可选）
+    "note_files": [                          // 笔记文件配置
       {
         "name": "AI研究笔记",
+        "folder": "AI",                          // 可选，仓库下的子文件夹
         "filename": "AI研究笔记.md",
         "description": "人工智能相关的论文、技术和理论研究"
       },
       {
         "name": "机器人技术",
+        "folder": "Robotics",                    // 可选，仓库下的子文件夹
         "filename": "机器人技术.md",
         "description": "机器人、具身智能、操作和控制相关内容"
       }
     ]
   },
+
+  "proxy": {
+    "https": "http://127.0.0.1:7890"  // 网络代理
+  },
   
   "google_docs": {
     "credentials_file": "config/google_credentials.json",
-    "note_documents": [                      // Google Docs文档配置
+    "note_files": [                      // Google Docs文档配置
       {
         "name": "DaliyAI笔记本",
         "document_id": "1B6_K3CB0nH1obz2dfltVvwVVFOklKlUPhHHG0aNwLxw",
@@ -312,6 +325,11 @@ python app.py
     "max_summary_length": 500                // 最大总结长度
   },
   
+  "agent": {
+    "enabled": true,                         // 是否启用智能代理（自动搜索增强）
+    "max_decision_content": 4000             // 用于决策的原始内容最大字符数
+  },
+  
   "rag": {
     "enabled": true,                         // 是否启用RAG
     "embedding_model": "text-embedding-ada-002",
@@ -322,21 +340,16 @@ python app.py
     "similarity_threshold": 0.7
   },
   
-  "bilibili": {
-    "summarizer_api": "",                    // B站视频总结API
-    "cookies": ""                            // B站cookies
-  },
-  
   "system": {
     "log_level": "INFO",
-    "message_queue_size": 100,
-    "auto_save_interval": 300,
     "timezone": "Asia/Shanghai",
     "admin_list": [],                        // 管理员列表
-    "whitelist_file": "config/group_whitelist.json",
-    "history_batch_size": 50,
-    "history_process_delay": 0.5,
-    "max_history_days": 30,
+    "whitelist_file": "config/group_whitelist.json", // 动态白名单存储文件
+    "message_queue_size": 100,               // 待处理消息队列大小
+    "auto_save_interval": 300,               // 自动保存间隔（秒）
+    "history_batch_size": 50,                // 历史消息处理批次大小
+    "history_process_delay": 0.5,            // 处理每条历史消息的延迟（秒）
+    "max_history_days": 30,                  // 处理历史消息的最大天数
     "message_db_path": "data/messages.db",   // 消息数据库路径
     "message_retention_days": 30             // 消息保留天数
   }
@@ -349,24 +362,24 @@ python app.py
 2. config.json 中的配置
 3. 默认值（如果都没有配置）
 
-### 群组白名单管理
+### 白名单管理
 
 #### 配置方式
-1. **静态配置**：在 `config.json` 中设置 `group_name_white_list`
-   - `[]`: 空列表，需要手动添加群组
-   - `["群组1", "群组2"]`: 只对指定群组生效
+1. **静态配置**：在 `config.json` 中分别设置 `group_name_white_list` 和 `user_name_white_list`。
+   - `group_name_white_list`: `["群聊名称1", "群聊名称2"]`
+   - `user_name_white_list`: `["联系人昵称1", "联系人备注1"]`
 
-2. **动态管理**：通过管理命令动态添加/移除群组
+2. **动态管理**：通过管理命令动态添加/移除（此功能待完善以支持两种列表）
    - 发送私聊消息给机器人：
      - `#add_group 群组名称`: 添加群组到白名单
-     - `#remove_group 群组名称`: 从白名单移除群组
-     - `#list_groups`: 查看当前白名单
+     - `#add_user 用户名称`: 添加用户到白名单
+     - `#list_whitelists`: 查看所有白名单
 
 3. **管理员权限**：在配置中设置 `system.admin_list` 来限制管理命令的使用
 
 #### 历史消息处理
-当新群组加入白名单时，机器人会自动：
-1. 扫描该群组的历史聊天记录（基于已存储的消息）
+当新的群聊或用户加入白名单时，机器人会自动：
+1. 扫描该会话的历史聊天记录（基于已存储的消息）
 2. 提取其中的链接和相关内容
 3. 按照正常流程整理到笔记系统中
 
@@ -379,7 +392,7 @@ python app.py
 支持处理导出的聊天记录：
 ```python
 # 支持的格式：txt、json、html
-# 使用管理命令：#import_history /path/to/export.txt 群组名称
+# 使用管理命令：#import_history /path/to/export.txt 会话名称
 ```
 
 ### Google Docs 配置 (可选)
@@ -408,40 +421,17 @@ python app.py
 ### 1. 消息持久化存储
 - 所有消息都会自动保存到SQLite数据库
 - 确保能获取完整的时间窗口内的上下文
-- 支持按时间、群组查询历史消息
+- 支持按时间、会话查询历史消息
 
 ### 2. 动态分类管理
-- 系统自动扫描Obsidian知识库文件夹作为分类
-- 无需在配置文件中定义分类
-- 机器人会自动适应用户对文件夹的修改
+- **对于Google Docs和Obsidian**:
+  - 引入了先进的动态层级分类功能。机器人会实时解析文档（Google Doc或Markdown文件）的完整标题结构，并由LLM智能决策最佳插入位置。详见下一节。
 
 ### 3. 多文件管理和智能分类
-- 支持配置多个笔记文件，每个文件有不同主题
-- LLM自动选择最合适的笔记文件
-- 智能识别或创建合适的类别
-- 在类别下正确插入新内容
+- 支持配置多个笔记文件（Obsidian或Google Docs），每个文件可以有不同主题。
+- LLM首先会根据内容主题和你在配置中对每个文件的描述，来自动选择最合适的笔记文件。
 
-#### 配置示例
-```json
-"note_files": [
-  {
-    "name": "AI研究笔记",
-    "filename": "AI研究笔记.md",
-    "description": "人工智能相关的论文、技术和理论研究"
-  },
-  {
-    "name": "机器人技术",
-    "filename": "机器人技术.md", 
-    "description": "机器人、具身智能、操作和控制相关内容"
-  }
-]
-```
-
-当有新内容时，机器人会：
-1. 根据内容主题选择合适的笔记文件
-2. 分析文件中的现有类别（二级标题）
-3. 选择合适的类别或建议新类别
-4. 在该类别下插入格式化的内容
+当有新内容需要存入 **Google Docs** 或 **Obsidian** 时，机器人都会执行统一的、智能的层级分类流程，确保笔记的有机组织和生长。
 
 ### 4. 智能去重
 - 检测相同URL或标题的内容
@@ -542,33 +532,37 @@ A:
 - 确认 `config.json` 中的配置是否正确。
 
 ### Q: 如何处理大量历史消息？
-A: 可以使用批量导入功能，或者分批次逐步添加群组到白名单。系统会自动从消息存储中获取上下文。
+A: 可以使用批量导入功能，或者分批次逐步添加会话到白名单。系统会自动从消息存储中获取上下文。
 
 ### Q: 为什么某些链接无法提取内容？
-A: 可能是网站有反爬虫措施，可以在 `content_extractor.py` 中添加特定的处理逻辑。
+A: 本项目现在依赖 [Jina AI Reader](https://github.com/jina-ai/reader) 进行内容提取，它能处理绝大多数网页。如果遇到特定网站无法提取，可以向 [Jina AI Reader项目](https://github.com/jina-ai/reader/issues) 提出issue，或者在 `services/content_extractor.py` 中实现针对该网站的自定义提取逻辑作为备用方案。
 
 ### Q: 如何备份数据？
 A: 
 - Obsidian笔记通过iCloud自动同步
 - 向量数据库在 `data/vector_store` 目录
-- 群组白名单在 `config/group_whitelist.json`
+- 会话白名单在 `config/group_whitelist.json`
 - 消息数据库在 `data/messages.db`
 
 ### Q: 如何自定义分类？
-A: 直接在Obsidian知识库文件夹中创建新的子文件夹即可，机器人会自动识别并使用。
+A: 你几乎不需要手动管理！
+- **对于 Google Docs**: 分类是完全动态和自动的。机器人会读取你文档中的所有标题层级，并让 LLM 决定新内容应该放在哪里，或者在哪里创建新标题。你只需要像平时一样在 Google Docs 中通过创建各级标题来组织你的文档，机器人会自动适应。
+- **对于 Obsidian**:
+  - **使用笔记文件**: 在配置中定义多个笔记文件，机器人会智能选择。在每个文件中，通过二级标题（`## 类别名`）组织内容，机器人会自动识别和使用它们。
+  - **使用文件夹**（旧方式）: 在Knowledge Base下创建子文件夹，文件夹名即为分类。
 
 ### Q: 如何管理多个主题的笔记？
 A: 
-1. 在配置文件中设置`note_files`，定义多个笔记文件
-2. 每个文件可以有不同的主题和描述
-3. 机器人会根据内容自动选择合适的文件
-4. 在每个文件内，使用二级标题（##）作为类别
+1. 在配置文件中设置`note_files`（针对Obsidian和Google Docs），定义多个笔记文件/文档。
+2. 每个文件可以有不同的主题和描述，这个描述会帮助LLM选择正确的文件。
+3. 之后，机器人会根据内容自动选择合适的文件，并进行智能分类。
+4. **Google Docs**: 在每个文档内部，机器人通过分析各级标题（H1, H2, H3...）来自动维护层级分类。
+5. **Obsidian**: 在每个文件内部，使用Markdown标题（`#`, `##`, `###` ...）组织内容，机器人会自动识别和使用它们。
 
 ### Q: 如何自定义分类结构？
 A: 
-- **使用笔记文件**：在配置中定义多个笔记文件，机器人会智能选择
-- **使用文件夹**（旧方式）：在Knowledge Base下创建子文件夹
-- **文件内分类**：使用二级标题（## 类别名）组织内容
+- **Google Docs / Obsidian**: 直接在你的文档/Markdown文件里维护你想要的标题结构即可。你可以随时新增、删除、修改、调整标题层级，机器人下次运行时会自动识别新的结构。
+- **Obsidian (旧版文件夹模式)**: 在知识库文件夹中创建新的子文件夹即可，机器人会自动识别并使用。
 
 ## 开发计划
 
@@ -577,13 +571,20 @@ A:
 - [x] 内容提取与总结
 - [x] Obsidian笔记集成
 - [x] RAG问答系统
-- [x] 群组白名单管理
+- [x] 会话白名单管理
 - [x] 历史消息处理
 - [x] 消息持久化存储
-- [x] 动态分类管理
+- [x] 动态分类管理 (支持 Obsidian 文件夹/文件内二级标题)
+- [x] **增强的动态层级分类** (支持 Google Docs 完整标题树和 LLM 智能决策)
 - [x] 智能去重功能
 - [x] Channel 抽象架构，支持三种微信通道
 - [x] 稳定、安全的Mac微信静默读取模式
+- [x] 采用Jina AI Reader重构内容提取，增强稳定性
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
 - [ ] 支持企业微信、飞书等更多通道
+
+安装时需要：
+export SQLCIPHER_PATH="$(brew --prefix sqlcipher)"
+export LIBRARY_PATH="$SQLCIPHER_PATH/lib:$LIBRARY_PATH"
+export C_INCLUDE_PATH="$SQLCIPHER_PATH/include:$C_INCLUDE_PATH"

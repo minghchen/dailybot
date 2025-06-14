@@ -6,6 +6,7 @@
     "single_chat_prefix": ["bot", "@bot"],
     "group_chat_prefix": ["@bot"],
     "group_name_white_list": [],
+    "user_name_white_list": [],
     "message_limit_per_minute": 20,
     "min_reply_delay": 2,
     "max_reply_delay": 5
@@ -15,6 +16,7 @@
     "single_chat_prefix": ["bot", "@bot"],
     "group_chat_prefix": ["@bot"],
     "group_name_white_list": [],
+    "user_name_white_list": [],
     "group_at_sender": true
   },
   
@@ -23,41 +25,46 @@
     "poll_interval": 60,
     "single_chat_prefix": ["bot", "@bot"],
     "group_chat_prefix": ["@bot"],
-    "group_name_white_list": []
+    "group_name_white_list": [],
+    "user_name_white_list": []
   },
   
   "openai": {
-    "model": "gpt-4o-mini",
-    "temperature": 0.7,
-    "max_tokens": 2000,
-    "conversation_max_tokens": 1000,
-    "proxy": ""
+    "model": "gpt-4.1",
+    "temperature": 0.7
   },
   
   "note_backend": "obsidian",
   
+  "note_management": {
+    "classification_strategy": "balanced"
+  },
+  
   "obsidian": {
     "vault_path": "/path/to/your/vault",
-    "daily_notes_folder": "Daily Notes",
-    "knowledge_base_folder": "Knowledge Base",
-    "template_path": "Templates/Daily Note Template.md",
     "note_files": [
       {
         "name": "AI研究笔记",
+        "folder": "AI",
         "filename": "AI研究笔记.md",
         "description": "人工智能相关的论文、技术和理论研究"
       },
       {
         "name": "机器人技术",
+        "folder": "Robotics",
         "filename": "机器人技术.md", 
         "description": "机器人、具身智能、操作和控制相关内容"
       }
     ]
   },
+
+  "proxy": {
+    "https": "http://127.0.0.1:7890"
+  },
   
   "google_docs": {
     "credentials_file": "config/google_credentials.json",
-    "note_documents": [
+    "note_files": [
       {
         "name": "DaliyAI笔记本",
         "document_id": "1B6_K3CB0nH1obz2dfltVvwVVFOklKlUPhHHG0aNwLxw",
@@ -68,10 +75,16 @@
   
   "content_extraction": {
     "context_time_window": 60,
+    "history_context_time_window": 300,
     "auto_extract_enabled": true,
     "extract_types": ["wechat_article", "bilibili_video", "arxiv_paper", "pdf", "web_link"],
     "silent_mode": true,
     "max_summary_length": 500
+  },
+  
+  "agent": {
+    "enabled": true,
+    "max_decision_content": 4000
   },
   
   "rag": {
@@ -84,18 +97,13 @@
     "similarity_threshold": 0.7
   },
   
-  "bilibili": {
-    "summarizer_api": "",
-    "cookies": ""
-  },
-  
   "system": {
     "log_level": "INFO",
-    "message_queue_size": 100,
-    "auto_save_interval": 300,
     "timezone": "Asia/Shanghai",
     "admin_list": [],
     "whitelist_file": "config/group_whitelist.json",
+    "message_queue_size": 100,
+    "auto_save_interval": 300,
     "history_batch_size": 50,
     "history_process_delay": 0.5,
     "max_history_days": 30,

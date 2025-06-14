@@ -30,18 +30,27 @@ class Reply:
 
 class Context:
     """消息上下文"""
-    def __init__(self, msg_type: str = None, content: Any = None, **kwargs):
-        self.type = msg_type  # 消息类型
-        self.content = content  # 消息内容
-        self.msg = kwargs.get('msg')  # 原始消息对象
-        self.is_group = kwargs.get('is_group', False)  # 是否群聊
-        self.nick_name = kwargs.get('nick_name', '')  # 发送者昵称
-        self.user_id = kwargs.get('user_id', '')  # 发送者ID
-        self.group_name = kwargs.get('group_name', '')  # 群名称
-        self.group_id = kwargs.get('group_id', '')  # 群ID
-        self.is_at = kwargs.get('is_at', False)  # 是否被@
+    def __init__(self,
+        type: str,
+        is_group: bool = False,
+        content: Optional[str] = None,
+        user_id: Optional[str] = None,
+        nick_name: Optional[str] = None,
+        room_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        msg: Optional[Any] = None,
+        **kwargs
+    ):
+        self.type = type
+        self.is_group = is_group
+        self.content = content
+        self.user_id = user_id
+        self.nick_name = nick_name
+        self.room_id = room_id
+        self.group_name = group_name
+        self.msg = msg
+        self.kwargs = kwargs
         self.reply = None  # 回复内容
-        self.kwargs = kwargs  # 其他参数
 
 
 class Channel(ABC):

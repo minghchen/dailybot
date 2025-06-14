@@ -1,270 +1,150 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-RAG服务
-负责实现检索增强生成功能
+RAG (Retrieval-Augmented Generation) 服务
+负责根据用户问题，从笔记库中实时检索相关内容，并结合LLM生成回答。
 """
-
-import os
-import pickle
+import re
 from typing import Dict, Any, List, Optional
 from loguru import logger
-import chromadb
-from chromadb.config import Settings
-import numpy as np
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
 
 class RAGService:
-    """RAG服务类"""
+    """
+    RAG服务类。
+    采用实时、双层检索的模式，而非静态索引。
+    """
     
-    def __init__(self, config: Dict[str, Any], llm_service, note_manager):
+    def __init__(self, config: Dict[str, Any], llm_service: Any, note_manager: Any):
         """
         初始化RAG服务
         
         Args:
-            config: RAG配置信息
+            config: RAG相关的配置
             llm_service: LLM服务实例
             note_manager: 笔记管理器实例
         """
-        self.config = config
+        self.config = config.get('rag', {})
+        self.enabled = self.config.get('enabled', False)
+        if not self.enabled:
+            logger.info("RAG服务未启用。")
+            return
+            
         self.llm_service = llm_service
         self.note_manager = note_manager
+        self.top_k = self.config.get('top_k', 5)
         
-        # 文本分割器
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=config['chunk_size'],
-            chunk_overlap=config['chunk_overlap'],
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
-        )
-        
-        # 初始化向量数据库
-        self._init_vector_db()
-        
-        # 初始化或加载索引
-        self._init_index()
-        
-        logger.info("RAG服务初始化成功")
-    
-    def _init_vector_db(self):
-        """初始化向量数据库"""
-        # 使用ChromaDB作为向量数据库
-        db_path = os.path.join(os.path.dirname(__file__), "..", "data", "chroma_db")
-        
-        self.chroma_client = chromadb.PersistentClient(
-            path=db_path,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
-        )
-        
-        # 创建或获取集合
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="dailybot_knowledge",
-            metadata={"hnsw:space": "cosine"}
-        )
-    
-    def _init_index(self):
-        """初始化或加载索引"""
-        try:
-            # 检查是否已有索引
-            if self.collection.count() == 0:
-                # 如果没有索引，从笔记构建
-                logger.info("开始构建向量索引...")
-                asyncio.create_task(self._build_index_from_notes())
-            else:
-                logger.info(f"加载现有向量索引，共 {self.collection.count()} 个文档")
-        except Exception as e:
-            logger.error(f"初始化索引失败: {e}", exc_info=True)
-    
-    async def _build_index_from_notes(self):
-        """从笔记构建索引"""
-        try:
-            # 获取所有笔记
-            notes = await self.note_manager.get_all_notes()
-            
-            for note in notes:
-                await self.add_document({
-                    'title': note['title'],
-                    'url': note['metadata'].get('url', ''),
-                    'content': note['content'],
-                    'metadata': note['metadata']
-                })
-            
-            logger.info(f"索引构建完成，共索引 {len(notes)} 篇笔记")
-            
-        except Exception as e:
-            logger.error(f"构建索引失败: {e}", exc_info=True)
-    
-    async def add_document(self, document: Dict[str, Any]):
-        """
-        添加文档到向量数据库
-        
-        Args:
-            document: 文档数据
-        """
-        try:
-            title = document.get('title', '')
-            url = document.get('url', '')
-            content = document.get('content', '')
-            metadata = document.get('metadata', {})
-            
-            # 分割文本
-            if 'summary' in document:
-                # 如果有总结，优先使用总结
-                text_to_split = f"{title}\n\n{document['summary']}\n\n{content[:1000]}"
-            else:
-                text_to_split = f"{title}\n\n{content}"
-            
-            chunks = self.text_splitter.split_text(text_to_split)
-            
-            # 为每个chunk生成嵌入
-            for i, chunk in enumerate(chunks):
-                # 生成唯一ID
-                doc_id = f"{url}_{i}" if url else f"{title}_{i}"
-                
-                # 生成嵌入向量
-                embedding = await self.llm_service.generate_embedding(chunk)
-                
-                # 准备元数据
-                chunk_metadata = {
-                    'title': title,
-                    'url': url,
-                    'chunk_index': i,
-                    'total_chunks': len(chunks),
-                    **metadata
-                }
-                
-                # 添加到向量数据库
-                self.collection.add(
-                    documents=[chunk],
-                    embeddings=[embedding],
-                    metadatas=[chunk_metadata],
-                    ids=[doc_id]
-                )
-            
-            logger.debug(f"文档已添加到向量数据库: {title} (分割为 {len(chunks)} 个chunk)")
-            
-        except Exception as e:
-            logger.error(f"添加文档到向量数据库失败: {e}", exc_info=True)
-    
-    async def query(self, query: str) -> str:
-        """
-        使用RAG进行查询
-        
-        Args:
-            query: 用户查询
-            
-        Returns:
-            生成的回答
-        """
-        try:
-            # 生成查询向量
-            query_embedding = await self.llm_service.generate_embedding(query)
-            
-            # 检索相关文档
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=self.config['top_k']
-            )
-            
-            if not results['documents'][0]:
-                # 如果没有找到相关文档，直接使用LLM回答
-                return await self.llm_service.chat(query)
-            
-            # 构建上下文
-            context = self._build_context_from_results(results)
-            
-            # 构建增强提示
-            enhanced_prompt = f"""基于以下参考资料回答用户的问题。如果参考资料中没有相关信息，请诚实地说不知道。
+        logger.info(f"RAG服务初始化成功 (双层实时检索模式)，将检索 Top {self.top_k} 个结果。")
 
-参考资料：
+    async def _select_relevant_files_with_llm(self, query: str) -> List[Dict[str, Any]]:
+        """
+        RAG第一层：使用LLM根据查询选择相关的笔记文件。
+        """
+        all_files = self.note_manager.get_note_files_config()
+        if not all_files or len(all_files) <= 1:
+            return all_files
+
+        options_str = "\n".join([
+            f"- 文件名: {f.get('name', '未命名')}\n  描述: {f.get('description', '无描述')}"
+            for f in all_files
+        ])
+
+        prompt = f"""
+你是一个信息检索专家。你的任务是根据一个用户问题，从下面的文件列表中，选出所有可能包含相关信息的文件。
+
+[用户问题]
+"{query}"
+
+[文件列表]
+{options_str}
+
+[你的任务]
+请分析问题和文件描述，列出所有相关的文件名。如果多个文件都可能相关，请全部列出。
+
+[输出格式]
+请严格按照以下格式回答，每行一个文件名，不要添加任何其他内容：
+文件名1
+文件名2
+...
+"""
+        
+        try:
+            response = await self.llm_service.chat(prompt)
+            relevant_file_names = [name.strip() for name in response.split('\n') if name.strip()]
+            
+            if not relevant_file_names:
+                logger.warning("LLM未能确定任何相关文件，将搜索所有文件作为后备。")
+                return all_files
+
+            selected_configs = [f_config for f_config in all_files if f_config.get('name') in relevant_file_names]
+            logger.info(f"RAG第一层：LLM选择了 {len(selected_configs)} 个相关文件进行搜索: {[f.get('name') for f in selected_configs]}")
+            return selected_configs
+        except Exception as e:
+            logger.error(f"LLM选择相关文件失败: {e}，将搜索所有文件作为后备。")
+            return all_files
+
+    async def answer_question(self, query: str, group_filter: Optional[str] = None) -> str:
+        """
+        使用双层RAG流程回答问题：先选文件，再在文件内搜索。
+        """
+        if not self.enabled:
+            return "抱歉，问答功能当前未启用。"
+            
+        try:
+            # 1. RAG第一层：智能选择相关文件
+            logger.info(f"RAG: 开始双层搜索，问题: '{query}'")
+            relevant_files = await self._select_relevant_files_with_llm(query)
+
+            # 2. RAG第二层：在选定的每个文件内进行搜索
+            all_snippets = []
+            for file_config in relevant_files:
+                snippets = await self.note_manager.search_in_document(file_config, query, group_filter)
+                for s in snippets:
+                    s['document_name'] = file_config.get('name') # 确保来源信息
+                all_snippets.extend(snippets)
+            
+            if not all_snippets:
+                logger.warning("RAG: 未在任何相关文件中找到匹配片段，将直接由LLM回答。")
+                return await self.llm_service.chat(f"请直接回答这个问题: {query}")
+
+            # 3. 构建上下文
+            # TODO: 在此可以加入更智能的跨文件结果排序和去重逻辑
+            final_snippets = all_snippets[:self.top_k]
+            context = "\n---\n".join([
+                f"来源文件: {res.get('document_name')}\n标题: {res.get('title', '无标题')}\n内容片段: {res.get('text', '')}"
+                for res in final_snippets
+            ])
+            logger.debug(f"RAG: 构建的最终上下文 (前200字符): {context[:200]}...")
+
+            # 4. 构建提示并生成答案
+            prompt = f"""
+你是一个智能助理。请根据以下从多个笔记文件中检索到的、最相关的上下文信息，来回答用户的问题。
+
+[上下文信息]
 {context}
 
-用户问题：{query}
+[用户问题]
+{query}
 
-请提供准确、有帮助的回答："""
+请注意：
+- 请只根据提供的上下文信息进行回答，不要编造信息。
+- 如果上下文信息不足以回答问题，请明确告知用户"根据现有笔记，我无法回答这个问题"。
+- 你的回答应该简洁、清晰、并直接针对用户的问题。
+"""
             
-            # 使用LLM生成回答
-            answer = await self.llm_service.chat(enhanced_prompt)
-            
-            # 添加来源引用
-            sources = self._extract_sources(results)
-            if sources:
-                answer += "\n\n参考来源：\n"
-                for source in sources:
-                    answer += f"- [{source['title']}]({source['url']})\n"
-            
+            answer = await self.llm_service.chat(prompt)
+            logger.info("RAG: 已成功生成回答。")
             return answer
-            
-        except Exception as e:
-            logger.error(f"RAG查询失败: {e}", exc_info=True)
-            # 降级到普通LLM回答
-            return await self.llm_service.chat(query)
-    
-    def _build_context_from_results(self, results: Dict[str, Any]) -> str:
-        """从检索结果构建上下文"""
-        context_parts = []
-        
-        documents = results['documents'][0]
-        metadatas = results['metadatas'][0]
-        distances = results['distances'][0]
-        
-        for i, (doc, metadata, distance) in enumerate(zip(documents, metadatas, distances)):
-            # 计算相似度分数（距离越小越相似）
-            similarity = 1 - distance
-            
-            # 如果相似度太低，跳过
-            if similarity < self.config['similarity_threshold']:
-                continue
-            
-            title = metadata.get('title', '未知')
-            context_parts.append(f"【{title}】\n{doc}\n")
-        
-        return "\n---\n".join(context_parts)
-    
-    def _extract_sources(self, results: Dict[str, Any]) -> List[Dict[str, str]]:
-        """从检索结果中提取来源信息"""
-        sources = []
-        seen_urls = set()
-        
-        metadatas = results['metadatas'][0]
-        distances = results['distances'][0]
-        
-        for metadata, distance in zip(metadatas, distances):
-            similarity = 1 - distance
-            
-            # 如果相似度太低，跳过
-            if similarity < self.config['similarity_threshold']:
-                continue
-            
-            url = metadata.get('url', '')
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                sources.append({
-                    'title': metadata.get('title', '未知'),
-                    'url': url
-                })
-        
-        return sources
-    
-    async def update_index(self):
-        """更新索引（全量重建）"""
-        try:
-            logger.info("开始更新向量索引...")
-            
-            # 清空现有索引
-            self.collection.delete(where={})
-            
-            # 重新构建索引
-            await self._build_index_from_notes()
-            
-            logger.info("向量索引更新完成")
-            
-        except Exception as e:
-            logger.error(f"更新索引失败: {e}", exc_info=True)
 
+        except Exception as e:
+            logger.error(f"RAG处理过程中发生错误: {e}", exc_info=True)
+            return "抱歉，我在回答问题时遇到了一个内部错误。"
 
-# 需要在文件开头添加asyncio导入
-import asyncio 
+# --- 以下为旧的、基于静态索引的逻辑，已被移除 ---
+# import chromadb
+# from langchain.vectorstores import Chroma
+# from langchain.text_splitter import RecursiveCharacterTextSplitter
+# from langchain.docstore.document import Document
+# from langchain_openai import OpenAIEmbeddings
+# from langchain.retrievers import ContextualCompressionRetriever
+# from langchain.retrievers.document_compressors import LLMChainExtractor
+# from langchain.chains import RetrievalQA 
