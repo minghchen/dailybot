@@ -5,20 +5,14 @@ import sys
 
 from .channel import Channel
 from .js_wechaty_channel import JSWechatyChannel
-
-# 根据操作系统平台，条件性地导入特定通道
-if sys.platform == "win32":
+import platform
+sys_type = platform.system().lower()
+if sys_type == 'windows':
     from .wcf_channel import WcfChannel
-else:
-    # 在非Windows系统上，定义一个假的WcfChannel以避免NameError
-    WcfChannel = None 
-
-# Mac微信通道（仅macOS可用）
-if sys.platform == "darwin":
+elif sys_type == 'linux':
+    from .wcf_channel import WcfChannel
+elif sys_type == 'darwin':
     from .mac_wechat_channel import MacWeChatChannel
-else:
-    MacWeChatChannel = None
-
 
 __all__ = [
     'Channel',

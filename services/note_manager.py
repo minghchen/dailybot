@@ -265,7 +265,7 @@ class NoteManager:
             )
 
         return await self.llm_service.aclient.chat.completions.create(
-            model=self.llm_service.model,
+            model=self.llm_service.chat_model,
             response_model=InsertionDecision,
             messages=[{"role": "user", "content": prompt}],
             max_retries=2,

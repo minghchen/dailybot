@@ -142,6 +142,17 @@ dailybot/
   - WCF通道：仅支持Windows系统
   - Mac微信通道：仅支持macOS系统
 
+### 安装tips
+
+除了requirements.txt里的包，还有很多其他需要的，建议根据报错安装。
+
+pip install pysqlcipher3 之前需要：
+- brew install sqlcipher
+- brew install openssl
+- export SQLCIPHER_PATH="$(brew --prefix sqlcipher)"
+- export LIBRARY_PATH="$SQLCIPHER_PATH/lib:$LIBRARY_PATH"
+- export C_INCLUDE_PATH="$SQLCIPHER_PATH/include:$C_INCLUDE_PATH"
+
 ## 快速开始
 
 ### Mac用户专属快速启动 🆕
@@ -583,3 +594,5 @@ A:
 - [ ] 更多内容源支持
 - [ ] 多模态内容处理
 - [ ] 支持企业微信、飞书等更多通道
+
+

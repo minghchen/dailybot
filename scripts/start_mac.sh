@@ -64,4 +64,4 @@ echo "🚀 正在启动DailyBot..."
 echo "提示：首次运行可能需要输入系统密码以访问微信数据库"
 echo ""
 
-python3 app.py 
+python app.py 

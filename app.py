@@ -116,7 +116,8 @@ class DailyBot:
             logger.info("笔记管理器初始化成功")
             
             # 检查并初始化RAG服务
-            if self.config.get('rag', {}).get('enabled'):
+            if self.config['openai'].get('rag', {}).get('enabled'):
+
                 if 'rag' not in self.config:
                     logger.error("配置文件中缺少 'rag' 配置项。")
                     sys.exit(1)
