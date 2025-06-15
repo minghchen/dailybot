@@ -124,8 +124,7 @@ class NoteManager:
             await self.backend_manager.execute_save(
                 doc_id_or_path, 
                 content_data, 
-                insert_location,
-                document=doc_structure.get('raw_document') # 传递预加载的文档以优化
+                insert_location
             )
 
         except Exception as e:

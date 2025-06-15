@@ -52,7 +52,7 @@ class IrrelevantContent(BaseModel):
     """
     class Config:
         case_sensitive = False
-    reason: str = Field(..., description="判断内容不相关或无实质信息的简要原因。例如'内容是腾讯会议链接'或'内容是营销广告'。")
+    reason: str = Field(..., description="判断内容与AI研究不相关的简要原因。例如'内容是腾讯会议链接'或'内容是营销广告'。")
 
 
 class AgentService:
@@ -123,7 +123,7 @@ class AgentService:
     - **例子**: 一篇由领域专家撰写的、关于未来AI趋势的深度分析博客；一篇详尽的AI产品发布新闻稿。
 
 3.  **内容不相关 (IrrelevantContent)**: 
-    - **使用场景**: **当内容完全与AI技术、研究或重要资讯无关，或者内容本身没有信息量时，必须使用此选项**。
+    - **使用场景**: **当内容完全与AI技术、研究或重要资讯无关，必须使用此选项**。
     - **例子**: 一个腾讯会议链接；一个与AI无关的营销广告；一篇关于日常生活的普通文章；
     - **原则**: 如果你判断内容没有为AI知识库增加价值的必要，就果断选择此项。
 
