@@ -27,14 +27,17 @@ class MacWeChatService:
         self.config = config
         self.hook = MacWeChatHook()
         self.mode = 'silent'
-        self.msg_db_managers: List[DBManager] = []
+        self.encrypted_msg_db_paths: List[Path] = []
         self.contact_db_manager: DBManager = None
-        # 为不同类型的数据库缓存解密后的路径
+        # 为不同类型的数据库缓存解密后的路径和最后修改时间
         self._decrypted_db_paths: Dict[str, Path] = {}
+        self._db_last_modified: Dict[str, float] = {}
         # 缓存从数据库中解析出的完整联系人列表
         self._contacts_cache: List[Dict[str, Any]] = []
         # 缓存群聊ID到聊天表名的映射
         self._group_id_to_table_map: Dict[str, str] = {}
+        # 用于同步数据库解密操作的锁
+        self.db_lock = Lock()
         # Hook模式相关
         self.is_hook_mode = False
         self.tweak_message_log_path: Optional[Path] = None
@@ -42,7 +45,6 @@ class MacWeChatService:
         self.is_monitoring = False
         self.message_handlers = []
         self.last_log_size = 0
-        self.lock = Lock()
 
     def initialize(self, use_hook_mode: bool = False) -> bool:
         """根据模式初始化服务"""
@@ -57,16 +59,11 @@ class MacWeChatService:
             user_path = self.hook.find_user_data_path()
             if not user_path: return False
 
-            # 动态扫描并解密所有消息数据库
+            # 启动时仅扫描并记录加密消息数据库的路径，而不是解密它们
             message_dir = user_path / "Message"
-            msg_db_files = sorted(message_dir.glob("msg_*.db"))
-            logger.info(f"在 {message_dir} 中发现 {len(msg_db_files)} 个消息数据库文件，开始解密...")
+            self.encrypted_msg_db_paths = sorted(message_dir.glob("msg_*.db"))
+            logger.info(f"在 {message_dir} 中发现 {len(self.encrypted_msg_db_paths)} 个消息数据库文件，将在轮询时按需解密。")
 
-            for db_path in msg_db_files:
-                decrypted_path = self.hook.decrypt_database(db_path)
-                if decrypted_path:
-                    self.msg_db_managers.append(DBManager(decrypted_path))
-            
             all_contacts = []
             # 解密并解析个人联系人
             contact_db_path = user_path / "Contact" / "wccontact_new2.db"
@@ -89,8 +86,8 @@ class MacWeChatService:
 
             self._contacts_cache = all_contacts
             
-            if not self.msg_db_managers:
-                 logger.error("未能成功解密任何消息数据库。")
+            if not self.encrypted_msg_db_paths:
+                 logger.error("未能找到任何消息数据库。")
                  return False
 
             if not self._contacts_cache:
@@ -100,7 +97,7 @@ class MacWeChatService:
             #     # 当前代码通过MD5哈希直接计算表名，不再需要此映射。
             #     # self._build_group_to_table_map()
 
-            logger.info(f"成功加载 {len(self.msg_db_managers)} 个消息库和 {len(self._contacts_cache)} 个联系人/群组。")
+            logger.info(f"静默模式初始化完成。将监控 {len(self.encrypted_msg_db_paths)} 个消息库和 {len(self._contacts_cache)} 个联系人/群组。")
             return True
         except Exception as e:
             logger.error(f"静默模式初始化失败: {e}", exc_info=True)
@@ -164,44 +161,87 @@ class MacWeChatService:
              logger.info(f"成功准备 {len(self._decrypted_db_paths)} 个数据库。")
 
     def get_new_messages_since(self, last_check_time: int) -> List[Dict[str, Any]]:
-        """从所有聊天记录中获取指定时间之后的新消息"""
-        if not self.msg_db_managers:
-            logger.error("消息数据库未初始化，无法获取新消息。")
+        """从所有聊天记录中获取指定时间之后的新消息（通过实时解密）"""
+        if not self.encrypted_msg_db_paths:
+            logger.error("消息数据库路径未初始化，无法获取新消息。")
             return []
 
         all_new_messages = []
-        for db_manager in self.msg_db_managers:
-            # 1. 找出该库中所有的聊天表，并排除删除表
-            chat_tables = db_manager.execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Chat_%' AND name NOT LIKE '%_dels'")
-            
-            for table_tuple in chat_tables:
-                table_name = table_tuple[0]
-                
-                # 2. 从每个表中查询新消息
-                rows = db_manager.execute_query(
-                    f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
-                    (last_check_time,)
-                )
-                if not rows: continue
+        # 使用锁确保同一时间只有一个线程在进行解密和读取操作
+        with self.db_lock:
+            for db_path in self.encrypted_msg_db_paths:
+                decrypted_path = None
+                try:
+                    # --- 性能优化：检查文件修改时间 ---
+                    wal_path = db_path.with_suffix('.db-wal')
+                    db_mod_time = db_path.stat().st_mtime
+                    wal_mod_time = wal_path.stat().st_mtime if wal_path.exists() else 0
+                    
+                    last_mod_time = self._db_last_modified.get(db_path.name, 0)
+                    
+                    # 如果主库和WAL文件都未更新，则跳过此数据库
+                    if db_mod_time <= last_mod_time and wal_mod_time <= last_mod_time:
+                        continue
+                    
+                    logger.info(f"检测到数据库 {db_path.name} 或其WAL文件已更新，开始处理...")
 
-                # 3. 格式化消息
-                chatroom_id = table_name.replace("Chat_", "") + "@chatroom"
-                for row in rows:
-                    sender, content = None, row[2]
-                    if row[3] == 0 and content and ":\n" in content:
-                        parts = content.split(":\n", 1)
-                        if len(parts) == 2 and parts[0].startswith("wxid_"):
-                            sender, content = parts
+                    # 关键改动：每次轮询都重新解密，以获取包含最新WAL条目的快照
+                    decrypted_path = self.hook.decrypt_database(db_path)
+                    if not decrypted_path:
+                        continue
                     
-                    sender_name = self.get_contact_nickname(sender) if sender else ""
+                    # 更新最后处理的时间戳
+                    self._db_last_modified[db_path.name] = time.time()
                     
-                    all_new_messages.append({
-                        "msg_id": row[0], "create_time": row[1], "content": content,
-                        "sender_id": sender, "from_user_name": sender_name, 
-                        "room_id": chatroom_id, "is_group": True,
-                        "raw": {"MsgSource": row[4]}
-                    })
-        
+                    db_manager = DBManager(decrypted_path)
+                    
+                    # 1. 找出该库中所有的聊天表
+                    chat_tables = db_manager.execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Chat_%' AND name NOT LIKE '%_dels'")
+                    if not chat_tables:
+                        continue
+
+                    for table_tuple in chat_tables:
+                        table_name = table_tuple[0]
+                        
+                        # 2. 从每个表中查询新消息
+                        # 注意：列名基于实际日志和社区研究，可能随版本变化
+                        rows = db_manager.execute_query(
+                            f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource FROM {table_name} WHERE msgCreateTime > ?",
+                            (last_check_time,)
+                        )
+                        if not rows: continue
+
+                        # 3. 格式化消息
+                        chatroom_id = self._get_chatroom_id_from_table_name(table_name)
+                        is_group = bool(chatroom_id)
+
+                        for row in rows:
+                            sender, content = None, row[2]
+                            # mesDes为0表示是自己发送的消息，为1表示是收到的消息
+                            # 群聊中收到的消息，内容会以 "wxid_...:\n" 开头
+                            if is_group and row[3] == 1 and content and ":\n" in content:
+                                parts = content.split(":\n", 1)
+                                if len(parts) == 2 and parts[0].startswith("wxid_"):
+                                    sender, content = parts
+                            
+                            sender_name = self.get_contact_nickname(sender) if sender else ""
+                            
+                            all_new_messages.append({
+                                "msg_id": row[0], "create_time": row[1], "content": content,
+                                "sender_id": sender, "from_user_name": sender_name, 
+                                "room_id": chatroom_id, "is_group": is_group,
+                                "raw": {"MsgSource": row[4], "mesDes": row[3]}
+                            })
+                except Exception as e:
+                    logger.error(f"处理数据库 {db_path.name} 时发生错误: {e}", exc_info=True)
+                finally:
+                    # 确保每次生成的临时解密文件都被删除
+                    if decrypted_path and decrypted_path.exists():
+                        try:
+                            os.remove(decrypted_path)
+                        except OSError as e:
+                            logger.error(f"无法删除临时解密文件 {decrypted_path}: {e}")
+
         # 按时间排序所有找到的消息
         all_new_messages.sort(key=lambda x: x['create_time'])
         return all_new_messages
@@ -229,7 +269,7 @@ class MacWeChatService:
         return None
 
     def get_messages_by_chatroom(self, chatroom_name: str, start_timestamp: int = 0) -> List[Dict[str, Any]]:
-        if not self.msg_db_managers:
+        if not self.encrypted_msg_db_paths:
             logger.error("数据库未初始化。")
             return []
         
@@ -246,87 +286,137 @@ class MacWeChatService:
         all_messages = []
         table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
         
-        for db_manager in self.msg_db_managers:
-             # 直接查询已知的表
-            rows = db_manager.execute_query(
-                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource, messageType FROM {table_name} WHERE msgCreateTime > ?",
-                (start_timestamp,)
-            )
-            if not rows: continue
+        with self.db_lock:
+            for db_path in self.encrypted_msg_db_paths:
+                decrypted_path = None
+                try:
+                    # 同样应用时间戳检查以优化
+                    wal_path = db_path.with_suffix('.db-wal')
+                    db_mod_time = db_path.stat().st_mtime
+                    wal_mod_time = wal_path.stat().st_mtime if wal_path.exists() else 0
+                    if db_mod_time <= self._db_last_modified.get(db_path.name, 0) and wal_mod_time <= self._db_last_modified.get(db_path.name, 0):
+                        continue
+                    
+                    decrypted_path = self.hook.decrypt_database(db_path)
+                    if not decrypted_path: continue
+                    self._db_last_modified[db_path.name] = time.time()
+                    db_manager = DBManager(decrypted_path)
+                    
+                    rows = db_manager.execute_query(
+                        f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource, messageType FROM {table_name} WHERE msgCreateTime > ?",
+                        (start_timestamp,)
+                    )
+                    if not rows: continue
 
-            for row in rows:
-                sender, content = None, row[2]
-                if row[3] == 0 and content and ":\\n" in content:
-                    parts = content.split(":\\n", 1)
-                    if len(parts) == 2 and parts[0].startswith("wxid_"):
-                        sender, content = parts
-                
-                sender_name = self.get_contact_nickname(sender) if sender else chatroom_name
-                
-                all_messages.append({
-                    "msg_id": row[0], "create_time": row[1], "content": content,
-                    "sender_id": sender, "from_user_name": sender_name, 
-                    "room_id": chatroom_id, "is_group": True,
-                    "type": row[5],
-                    "raw": {"MsgSource": row[4]}
-                })
+                    for row in rows:
+                        sender, content = None, row[2]
+                        if row[3] == 0 and content and ":\\n" in content:
+                            parts = content.split(":\\n", 1)
+                            if len(parts) == 2 and parts[0].startswith("wxid_"):
+                                sender, content = parts
+                        
+                        sender_name = self.get_contact_nickname(sender) if sender else chatroom_name
+                        
+                        all_messages.append({
+                            "msg_id": row[0], "create_time": row[1], "content": content,
+                            "sender_id": sender, "from_user_name": sender_name, 
+                            "room_id": chatroom_id, "is_group": True,
+                            "type": row[5],
+                            "raw": {"MsgSource": row[4]}
+                        })
+                finally:
+                    if decrypted_path and decrypted_path.exists():
+                        os.remove(decrypted_path)
 
         all_messages.sort(key=lambda x: x['create_time'])
         logger.info(f"为群组 '{chatroom_name}' 获取到 {len(all_messages)} 条历史消息。")
         return all_messages
     
     def get_messages_by_chatroom_id(self, chatroom_id: str, start_timestamp: int = 0) -> List[Dict[str, Any]]:
-        if not self.msg_db_managers:
+        if not self.encrypted_msg_db_paths:
             logger.error("消息数据库未初始化。")
             return []
         
         all_messages = []
         table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
         
-        for db_manager in self.msg_db_managers:
-             # 直接查询已知的表
-            rows = db_manager.execute_query(
-                f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource, messageType FROM {table_name} WHERE msgCreateTime > ?",
-                (start_timestamp,)
-            )
-            if not rows: continue
+        with self.db_lock:
+            for db_path in self.encrypted_msg_db_paths:
+                decrypted_path = None
+                try:
+                    # 同样应用时间戳检查以优化
+                    wal_path = db_path.with_suffix('.db-wal')
+                    db_mod_time = db_path.stat().st_mtime
+                    wal_mod_time = wal_path.stat().st_mtime if wal_path.exists() else 0
+                    if db_mod_time <= self._db_last_modified.get(db_path.name, 0) and wal_mod_time <= self._db_last_modified.get(db_path.name, 0):
+                        continue
+                    
+                    decrypted_path = self.hook.decrypt_database(db_path)
+                    if not decrypted_path: continue
+                    self._db_last_modified[db_path.name] = time.time()
+                    db_manager = DBManager(decrypted_path)
+                    
+                    rows = db_manager.execute_query(
+                        f"SELECT mesLocalID, msgCreateTime, msgContent, mesDes, msgSource, messageType FROM {table_name} WHERE msgCreateTime > ?",
+                        (start_timestamp,)
+                    )
+                    if not rows: continue
 
-            for row in rows:
-                sender, content = None, row[2]
-                if row[3] == 0 and content and ":\\n" in content:
-                    parts = content.split(":\\n", 1)
-                    if len(parts) == 2 and parts[0].startswith("wxid_"):
-                        sender, content = parts
-                
-                sender_name = self.get_contact_nickname(sender) if sender else ""
-                
-                all_messages.append({
-                    "msg_id": row[0], "create_time": row[1], "content": content,
-                    "sender_id": sender, "from_user_name": sender_name, 
-                    "room_id": chatroom_id, "is_group": True,
-                    "type": row[5],
-                    "raw": {"MsgSource": row[4]}
-                })
+                    for row in rows:
+                        sender, content = None, row[2]
+                        if row[3] == 0 and content and ":\\n" in content:
+                            parts = content.split(":\\n", 1)
+                            if len(parts) == 2 and parts[0].startswith("wxid_"):
+                                sender, content = parts
+                        
+                        sender_name = self.get_contact_nickname(sender) if sender else ""
+                        
+                        all_messages.append({
+                            "msg_id": row[0], "create_time": row[1], "content": content,
+                            "sender_id": sender, "from_user_name": sender_name, 
+                            "room_id": chatroom_id, "is_group": True,
+                            "type": row[5],
+                            "raw": {"MsgSource": row[4]}
+                        })
+                finally:
+                    if decrypted_path and decrypted_path.exists():
+                        os.remove(decrypted_path)
 
         all_messages.sort(key=lambda x: x['create_time'])
         return all_messages
     
     def get_new_message_count_by_chatroom_id(self, chatroom_id: str, start_timestamp: int = 0) -> int:
-        if not self.msg_db_managers:
+        if not self.encrypted_msg_db_paths:
             return 0
             
         total_count = 0
         table_name = f"Chat_{hashlib.md5(chatroom_id.encode()).hexdigest()}"
         
-        for db_manager in self.msg_db_managers:
-            rows = db_manager.execute_query(
-                f"SELECT COUNT(*) FROM {table_name} WHERE msgCreateTime > ?",
-                (start_timestamp,)
-            )
-            if rows and rows[0]:
-                total_count += rows[0][0]
-                if total_count > 0:
-                    break
+        with self.db_lock:
+            for db_path in self.encrypted_msg_db_paths:
+                decrypted_path = None
+                try:
+                    # 同样应用时间戳检查以优化
+                    wal_path = db_path.with_suffix('.db-wal')
+                    db_mod_time = db_path.stat().st_mtime
+                    wal_mod_time = wal_path.stat().st_mtime if wal_path.exists() else 0
+                    if db_mod_time <= self._db_last_modified.get(db_path.name, 0) and wal_mod_time <= self._db_last_modified.get(db_path.name, 0):
+                        continue
+                    
+                    decrypted_path = self.hook.decrypt_database(db_path)
+                    if not decrypted_path: continue
+                    self._db_last_modified[db_path.name] = time.time()
+                    db_manager = DBManager(decrypted_path)
+                    
+                    rows = db_manager.execute_query(
+                        f"SELECT COUNT(*) FROM {table_name} WHERE msgCreateTime > ?",
+                        (start_timestamp,)
+                    )
+                    if rows and rows[0]:
+                        total_count += rows[0][0]
+                finally:
+                    if decrypted_path and decrypted_path.exists():
+                        os.remove(decrypted_path)
         
         return total_count
     
@@ -469,7 +559,7 @@ sendMessage("{to_user}", "{escaped_content}")
 
         while self.is_monitoring:
             try:
-                with self.lock:
+                with self.db_lock:
                     current_size = self.tweak_message_log_path.stat().st_size
                     if current_size > self.last_log_size:
                         with open(self.tweak_message_log_path, 'r', encoding='utf-8') as f:
@@ -558,7 +648,7 @@ sendMessage("{to_user}", "{escaped_content}")
 
         logger.info(f"开始为 {len(group_ids)} 个群聊构建ID->表名映射...")
         
-        for db_manager in self.msg_db_managers:
+        for db_manager in self.encrypted_msg_db_paths:
             # 修正：排除掉记录已删除消息的 _dels 表
             chat_tables = db_manager.execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Chat_%' AND name NOT LIKE '%_dels'")
             for table_tuple in chat_tables:
@@ -581,6 +671,21 @@ sendMessage("{to_user}", "{escaped_content}")
             if len(self._group_id_to_table_map) == len(group_ids): break
         
         logger.info(f"映射构建完成，成功匹配 {len(self._group_id_to_table_map)} 个群聊。")
+
+    def _get_chatroom_id_from_table_name(self, table_name: str) -> Optional[str]:
+        """根据表名反查群聊ID。这是一个备用方案，效率不高。"""
+        table_hash = table_name.replace("Chat_", "")
+        for contact in self._contacts_cache:
+            if contact.get('type') == 'group':
+                contact_id = contact.get('user_id')
+                if contact_id and hashlib.md5(contact_id.encode()).hexdigest() == table_hash:
+                    return contact_id
+        # 如果不是群聊，返回None
+        if "@chatroom" not in table_name:
+             # 对于个人聊天，表名通常是好友wxid的MD5哈希
+             # 这里可以添加反查逻辑，但目前暂不实现
+             return None
+        return table_name.replace("Chat_","")
 
 
 # 使用示例

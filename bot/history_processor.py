@@ -63,46 +63,24 @@ class HistoryProcessor:
         except Exception as e:
             logger.error(f"保存历史处理状态文件失败: {e}", exc_info=True)
 
-    async def get_new_history_count_by_id(self, group_id: str) -> int:
-        """根据群组ID获取待处理的历史消息数量"""
-        if self.config.get('channel_type') != 'mac_wechat' or not hasattr(self.channel, 'service'):
-            return 0
-            
-        mac_service = self.channel.service
-        if not mac_service:
-            return 0
-
-        last_timestamp = self.group_process_state.get(group_id)
-        if last_timestamp:
-            start_timestamp = last_timestamp
-        else:
-            start_time = datetime.now() - timedelta(days=self.max_history_days)
-            start_timestamp = int(start_time.timestamp())
-        
-        return mac_service.get_new_message_count_by_chatroom_id(group_id, start_timestamp)
-
-    async def process_group_history_by_id(self, group_id: str, group_name: str) -> int:
+    async def process_fetched_history(self, group_id: str, group_name: str, messages: List[Dict[str, Any]]) -> int:
         """
-        处理群组的历史消息
+        处理已经预先获取好的历史消息列表
         
         Args:
             group_id: 群组ID
             group_name: 群组名称（用于日志)
+            messages: 待处理的消息列表
             
         Returns:
             处理的消息数量
         """
         try:
-            logger.info(f"开始为群组 '{group_name}' (ID: {group_id}) 处理历史消息...")
-            
-            # 获取历史消息
-            messages = await self._get_group_history(group_id)
+            logger.info(f"开始为群组 '{group_name}' (ID: {group_id}) 处理 {len(messages)} 条已获取的历史消息...")
             
             if not messages:
-                logger.info(f"群组 '{group_name}' 没有新的历史消息需要处理。")
                 return 0
             
-            logger.info(f"找到 {len(messages)} 条新的历史消息，开始分批处理...")
             # 分批处理消息
             processed_count = 0
             total_messages = len(messages)
@@ -113,11 +91,12 @@ class HistoryProcessor:
                 
                 if batch_processed > 0:
                     processed_count += batch_processed
-                    # 更新状态到当前批次的最后一条消息
-                    last_msg_time = batch[-1].get('create_time')
-                    if last_msg_time:
-                        self.group_process_state[group_id] = last_msg_time
-                        self._save_state()
+                
+                # 更新状态到当前批次的最后一条消息
+                last_msg_time = batch[-1].get('create_time')
+                if last_msg_time:
+                    self.group_process_state[group_id] = last_msg_time
+                    self._save_state()
 
                 # 显示进度
                 progress = (i + len(batch)) / total_messages * 100
@@ -131,44 +110,6 @@ class HistoryProcessor:
         except Exception as e:
             logger.error(f"处理群组 '{group_name}' 历史消息时出错: {e}", exc_info=True)
             return 0
-
-    async def _get_group_history(self, group_id: str) -> List[Dict[str, Any]]:
-        """
-        从Mac微信数据库获取群组历史消息
-        
-        Args:
-            group_id: 群组ID
-            
-        Returns:
-            消息列表
-        """
-        if self.config.get('channel_type') != 'mac_wechat' or not hasattr(self.channel, 'service'):
-            logger.warning("历史消息获取仅在Mac微信通道下可用。")
-            return []
-
-        try:
-            mac_service = self.channel.service
-            if not mac_service:
-                logger.error("MacWeChatService 不可用。")
-                return []
-            
-            # 确定起始时间戳
-            last_timestamp = self.group_process_state.get(group_id)
-            if last_timestamp:
-                start_timestamp = last_timestamp
-                logger.info(f"群组 '{group_id}' 存在处理记录，将从 {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')} 开始增量处理。")
-            else:
-                start_time = datetime.now() - timedelta(days=self.max_history_days)
-                start_timestamp = int(start_time.timestamp())
-                logger.info(f"群组 '{group_id}' 为首次处理，将获取过去 {self.max_history_days} 天的消息。")
-
-            # 调用服务层方法获取消息
-            messages = mac_service.get_messages_by_chatroom_id(group_id, start_timestamp)
-
-            return messages
-        except Exception as e:
-            logger.error(f"从数据库获取群组 '{group_id}' 历史消息失败: {e}", exc_info=True)
-            return []
 
     def _map_msg_type_to_context(self, msg_type: int) -> str:
         """将Mac微信的消息类型码映射到统一的Context类型"""

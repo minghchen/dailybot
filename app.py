@@ -225,18 +225,29 @@ class DailyBot:
         
         # 注入channel到message_handler
         self.message_handler.set_channel(self.channel)
+        # 注入message_handler到channel，以确保轮询时可以调用
+        if hasattr(self.channel, 'set_message_handler'):
+            self.channel.set_message_handler(self.message_handler)
         
+        # 注入主事件循环，用于后台线程安全地调用异步函数
+        if hasattr(self.channel, 'set_event_loop'):
+            self.channel.set_event_loop(asyncio.get_running_loop())
+
         # 启动通道
-        logger.info("正在启动消息通道...")
+        logger.info("正在启动消息通道服务...")
         self.running = True
         
         try:
-            # 启动channel
+            # 步骤 1: 启动并初始化通道服务
             self.channel.startup()
             
-            # 启动后处理已在白名单的群组的历史消息
+            # 步骤 2: (同步)处理已在白名单的群组的历史消息
             await self.message_handler.check_and_process_history_on_startup()
             
+            # 步骤 3: 在历史消息处理完后，再启动后台轮询
+            if hasattr(self.channel, 'start_polling'):
+                self.channel.start_polling()
+
             # 保持运行
             while self.running:
                 await asyncio.sleep(1)

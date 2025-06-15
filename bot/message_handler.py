@@ -136,30 +136,8 @@ class MessageHandler:
         Args:
             context: 消息上下文
         """
-        try:
-            # 构造消息对象用于存储
-            msg = {
-                'MsgId': getattr(context.msg, 'msg_id', str(time.time())),
-                'FromUserName': context.user_id,
-                'ToUserName': '',
-                'Content': context.content,
-                'CreateTime': int(time.time()),
-                'Type': context.type,
-                'Text': context.content,
-                'User': {
-                    'NickName': context.nick_name,
-                    'UserName': context.user_id
-                }
-            }
-            
-            # 如果是群消息，添加群信息
-            if context.is_group:
-                msg['User']['NickName'] = context.group_name
-                msg['ActualNickName'] = context.nick_name
-            
-            self.message_storage.save_message(msg)
-        except Exception as e:
-            logger.error(f"保存消息失败: {e}")
+        # 直接传递Context对象，让save_message自行处理
+        self.message_storage.save_message(context)
     
     async def handle_text_message(self, context: Context) -> Optional[Reply]:
         """处理文本消息的总入口"""
@@ -448,7 +426,6 @@ class MessageHandler:
             logger.info("历史消息自动处理功能仅在'mac_wechat'通道下可用。")
             return
 
-        # 从配置中获取白名单群组名称
         group_names_to_process = self.group_name_white_list
         if not group_names_to_process:
             logger.info("群组白名单为空，无需处理历史消息。")
@@ -456,29 +433,55 @@ class MessageHandler:
 
         logger.info(f"配置的白名单群组: {list(group_names_to_process)}")
         
-        # 获取所有可用的群聊信息
         all_groups = [c for c in self.channel.service.get_contacts() if c.get('type') == 'group']
         all_group_names = {g['nickname']: g['user_id'] for g in all_groups}
         
+        # [修复] 统一更新时间戳，以解决启动时轮询起点不准的问题
+        # 记录历史检查开始的时间，并找到所有群组中最新的消息时间戳
+        check_start_time = int(time.time())
+        latest_message_ts = 0
+
         for group_name in group_names_to_process:
             if group_name in all_group_names:
                 group_id = all_group_names[group_name]
                 logger.info(f"✅ 找到白名单群组: '{group_name}' (ID: {group_id})")
                 
-                # 动态地将解析出的ID添加到ID白名单中，以便后续检查
                 self.group_id_white_list.add(group_id)
                 
-                # 获取待处理消息数量
-                new_messages_count = await self.history_processor.get_new_history_count_by_id(group_id)
-                logger.info(f"   -> 发现 {new_messages_count} 条新的历史消息待处理。")
+                try:
+                    # Step 1: 获取上一次处理的时间戳
+                    last_processed_time = self.history_processor.group_process_state.get(group_id, 0)
+                    if last_processed_time == 0:
+                        start_time = datetime.now() - timedelta(days=self.history_processor.max_history_days)
+                        last_processed_time = int(start_time.timestamp())
 
-                if new_messages_count > 0:
-                    try:
-                        await self.history_processor.process_group_history_by_id(group_id, group_name)
-                    except Exception as e:
-                        logger.error(f"处理群组 '{group_name}' 历史消息时失败: {e}", exc_info=True)
+                    # Step 2: 一次性获取所有新消息
+                    new_messages = await self.channel.get_messages_by_chatroom_id(group_id, last_processed_time)
+                    
+                    if new_messages:
+                        logger.info(f"   -> 发现 {len(new_messages)} 条新的历史消息待处理。")
+                        # Step 3: 将获取到的消息传递给处理器
+                        await self.history_processor.process_fetched_history(group_id, group_name, new_messages)
+                        
+                        # [修改] 只更新 latest_message_ts，而不是直接调用channel的方法
+                        last_msg_ts_in_group = new_messages[-1].get('create_time')
+                        if last_msg_ts_in_group:
+                            latest_message_ts = max(latest_message_ts, last_msg_ts_in_group)
+                    else:
+                        logger.info(f"   -> 群组 '{group_name}' 没有新的历史消息。")
+                        
+                except Exception as e:
+                    logger.error(f"处理群组 '{group_name}' 历史消息时失败: {e}", exc_info=True)
             else:
                 logger.warning(f"❌ 未在您的微信联系人中找到名为 '{group_name}' 的白名单群组，请检查名称是否完全匹配。")
+
+        # [新增] 在所有群组检查完毕后，进行一次总的时间戳更新
+        # 取"历史检查完成的当前时间"和"找到的最新消息时间"中的最大值
+        # 这样可以确保轮询不会重复扫描刚刚检查过的时段
+        final_timestamp = max(check_start_time, latest_message_ts)
+        if hasattr(self.channel, 'update_processed_timestamp'):
+            logger.info(f"所有历史消息检查完成，将主通道时间戳统一更新至 {datetime.fromtimestamp(final_timestamp)}")
+            self.channel.update_processed_timestamp(final_timestamp)
 
     def _save_whitelist(self):
         """保存白名单到文件"""

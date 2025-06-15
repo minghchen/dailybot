@@ -78,33 +78,36 @@ class MessageStorage:
             
             conn.commit()
     
-    def save_message(self, msg: Dict[str, Any]):
+    def save_message(self, context: 'Context'):
         """
         保存消息到数据库
         
         Args:
-            msg: 微信消息对象
+            context: 消息上下文对象
         """
         try:
             with self.lock:
-                # 提取消息信息
-                msg_id = msg.get('MsgId', str(time.time()))
-                from_user = msg.get('FromUserName', '')
-                to_user = msg.get('ToUserName', '')
-                user_nickname = msg.get('User', {}).get('NickName', '')
-                content = msg.get('Text', '')
-                msg_type = msg.get('Type', '')
-                url = msg.get('Url', '')
-                is_group = from_user.startswith('@@')
-                create_time = msg.get('CreateTime', int(time.time()))
+                # 从 Context 对象安全地提取信息
+                msg_id = getattr(context.msg, 'msg_id', f"{context.user_id}-{int(time.time())}")
+                from_user = context.user_id or ''
+                # 对于私聊，to_user可能是自己的ID，这里暂时留空或根据需要填充
+                to_user = getattr(context.msg, 'to_user_id', '') 
                 
-                # 群组名称
-                group_name = ''
-                if is_group:
-                    group_name = msg.get('User', {}).get('NickName', '')
+                user_nickname = context.nick_name or ''
+                group_name = context.group_name or ''
+                content = context.content or ''
+                msg_type = context.type or 'UNKNOWN'
+                is_group = context.is_group
+                # 尝试从原始消息获取 create_time，否则使用当前时间
+                create_time = getattr(context.msg, 'create_time', int(time.time()))
                 
+                # 安全地提取 URL
+                url = ''
+                if isinstance(context.msg, dict) and 'Url' in context.msg:
+                    url = context.msg.get('Url', '')
+
                 # 序列化原始数据
-                raw_data = json.dumps(msg, ensure_ascii=False)
+                raw_data = json.dumps(context.msg, ensure_ascii=False, default=str)
                 
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
@@ -175,20 +178,24 @@ class MessageStorage:
                 messages = []
                 for row in rows:
                     try:
+                        # 兼容处理，将Row对象转为字典
+                        row_dict = dict(row)
                         # 反序列化原始数据
-                        raw_data = json.loads(row['raw_data'])
+                        raw_data = json.loads(row_dict['raw_data'])
+                        # 确保create_time是整数
+                        raw_data['create_time'] = int(raw_data.get('create_time', row_dict.get('create_time', 0)))
                         messages.append(raw_data)
-                    except:
+                    except Exception:
                         # 如果原始数据解析失败，构建基本消息对象
                         messages.append({
-                            'MsgId': row['msg_id'],
-                            'FromUserName': row['from_user'],
-                            'ToUserName': row['to_user'],
-                            'User': {'NickName': row['user_nickname']},
-                            'Text': row['content'],
-                            'Type': row['msg_type'],
-                            'Url': row['url'],
-                            'CreateTime': row['create_time']
+                            'msg_id': row['msg_id'],
+                            'sender_id': row['from_user'],
+                            'room_id': row['group_name'] if row['is_group'] else '',
+                            'from_user_name': row['user_nickname'],
+                            'content': row['content'],
+                            'type': row['msg_type'],
+                            'url': row['url'],
+                            'create_time': int(row['create_time'])
                         })
                 
                 logger.info(f"获取到 {len(messages)} 条消息 (时间窗口: {window_seconds}秒)")
