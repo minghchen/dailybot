@@ -2,6 +2,8 @@
 
 一个智能的科研小助理，能够自动提取、总结和整理聊天记录中的有价值信息到笔记系统。目前支持多种微信登录方式，可跨平台运行。
 
+> 面向开发者的完整架构与项目结构说明，现已迁移至 `AGENTS.md`。
+
 ## 主要功能
 
 ### 1. 自动信息提取与整理
@@ -80,59 +82,6 @@
 - **静默读取模式 (默认)**：定期读取聊天记录数据库，绝对安全、稳定，但有一定消息延迟。是开箱即用的推荐模式。**此模式需要用户提前获取并设置 `WECHAT_DB_KEY` 环境变量。**
 - **Hook模式 (实验性)**：依赖用户**手动安装**的第三方工具 [`WeChatTweak-macOS`](https://github.com/sunnyyoung/WeChatTweak-macOS) ，实现实时消息的接收和发送。功能更强大，但需要额外配置且依赖第三方工具的稳定性。**本项目不会尝试自动安装Tweak，仅会检查其是否存在。**
 - 详见 [Mac微信通道使用指南](docs/mac_wechat_guide.md)
-
-## 架构说明
-
-### Channel 架构
-本项目采用了 Channel 抽象架构，将消息接收、处理、发送的逻辑抽象化：
-- **Channel 基类**：定义了统一的消息处理接口
-- **JSWechatyChannel**：基于 JavaScript Wechaty 实现的微信通道
-- **WcfChannel**：基于 WeChat-Ferry 实现的Windows微信通道
-- **MacWeChatChannel**：基于本地数据库读取或集成第三方Hook工具实现的macOS通道
-- **可扩展性**：未来可以轻松添加企业微信、飞书、钉钉等其他通道
-
-## 项目结构
-
-```
-dailybot/
-├── app.py                      # 主程序入口
-├── bot/                        # 机器人核心逻辑
-│   ├── message_handler.py      # 消息处理器
-│   └── history_processor.py    # 历史消息处理器
-├── channel/                    # 消息通道抽象层
-│   ├── channel.py              # Channel基类
-│   ├── channel_factory.py      # Channel工厂
-│   ├── js_wechaty_channel.py   # JS Wechaty通道实现
-│   ├── mac_wechat_channel.py   # Mac微信通道实现
-│   └── wcf_channel.py          # WeChat-Ferry通道实现
-├── services/                   # 服务层
-│   ├── content_extractor.py    # 内容提取服务
-│   ├── llm_service.py          # LLM调用服务
-│   ├── note_manager.py         # 笔记管理服务
-│   ├── google_docs_manager.py  # Google Docs管理器
-│   ├── mac_wechat_service.py   # Mac微信服务
-│   └── rag_service.py          # RAG服务
-├── utils/                      # 工具类
-│   ├── time_utils.py           # 时间工具
-│   ├── video_summarizer.py     # 视频总结工具
-│   └── message_storage.py      # 消息持久化存储
-├── config/                     # 配置文件目录
-│   └── config.example.json     # 配置文件示例
-├── data/                       # 数据存储目录
-│   ├── messages.db             # 消息数据库
-│   └── vector_store/           # 向量数据库
-├── logs/                       # 日志目录
-├── scripts/                    # 脚本工具
-│   ├── start.sh                # 快速启动脚本
-│   ├── start_mac.sh            # Mac专用启动脚本
-│   └── js_wechaty_server.example.js  # JS Wechaty服务示例
-├── docs/                       # 文档目录
-├── templates/                  # 模板文件
-├── Dockerfile                  # Docker镜像配置
-├── docker-compose.yml          # Docker Compose配置
-├── requirements.txt            # Python依赖
-└── README.md                   # 项目说明文档
-```
 
 ## 环境要求
 
