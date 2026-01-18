@@ -134,7 +134,7 @@ class AgentService:
 """
         try:
             decision = await self.llm_service.aclient.chat.completions.create(
-                model=self.llm_service.model,
+                model=self.llm_service.chat_model,
                 response_model=Union[SearchAndSummarize, DirectSummarize, IrrelevantContent],
                 messages=[
                     {"role": "user", "content": prompt},
@@ -287,7 +287,8 @@ class AgentService:
 """
         try:
             note = await self.llm_service.aclient.chat.completions.create(
-                model=self.llm_service.model,
+                model=self.llm_service.chat_model,
+
                 response_model=StructuredNote,
                 messages=[
                     # 为模型提供一个高质量的输入输出范例

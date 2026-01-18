@@ -76,7 +76,9 @@ pyasn1==0.6.0
 pyasn1-modules==0.4.0
 oauthlib==3.2.2
 instructor
-playwright google-api-python-client-discovery
+playwright 
+google-api-python-client-discovery
+
 
 # New dependencies
 duckduckgo-search==5.3.1b1

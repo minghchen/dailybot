@@ -28,7 +28,8 @@ class LLMService:
             config: OpenAI配置信息
         """
         self.config = config
-        self.model = config.get('model', 'gpt-4.1')
+        self.chat_model = config.get('model', 'gpt-4.1')
+        self.embedding_model = config.get('rag', {}).get('embedding_model', 'text-embedding-3-small')
         self.temperature = config.get('temperature', 0.7)
         self.max_completion_tokens = 3000
         
@@ -41,11 +42,11 @@ class LLMService:
         
         # 初始化tokenizer
         try:
-            self.encoding = tiktoken.encoding_for_model(self.model)
+            self.encoding = tiktoken.encoding_for_model(self.chat_model)
         except:
             self.encoding = tiktoken.get_encoding("cl100k_base")
             
-        logger.info(f"LLM服务初始化成功，使用模型: {self.model}")
+        logger.info(f"LLM服务初始化成功，chat_model: {self.chat_model}")
     
     def _get_http_client(self):
         """获取HTTP客户端（支持代理）"""
@@ -104,7 +105,7 @@ class LLMService:
             
             # 调用API
             response = await self.aclient.chat.completions.create(
-                model=self.model,
+                model=self.chat_model,
                 messages=messages,
                 temperature=self.temperature,
                 max_completion_tokens=self.max_completion_tokens
@@ -133,7 +134,7 @@ class LLMService:
         """
         try:
             response = await self.aclient.embeddings.create(
-                model=self.config['rag']['embedding_model'],
+                model=self.embedding_model,
                 input=text
             )
             
